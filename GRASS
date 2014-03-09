@@ -1,0 +1,1077 @@
+#!/usr/bin/perl -w
+use strict;
+use Getopt::Long;
+
+my $version_num = "dev";
+my $help_message = get_help($version_num);
+
+my $version;
+my $help;
+my $quiet;
+my $mismatches = 0;
+my $aln_cores = 1;
+my $adapter;
+
+# If no arguments, quit with usage
+unless($ARGV[-1]) {
+    print "$help_message";
+    exit;
+}
+
+# Get options
+GetOptions ('version' => \$version,
+	    'help' => \$help,
+	    'quiet' => \$quiet,
+	    'mismatches=i' => \$mismatches,
+	    'aln_cores=i' => \$aln_cores,
+	    'adapter=s' => \$adapter);
+
+# If version, print version_num and quit
+if($version) {
+    print "GRASS version $version_num\n";
+    exit;
+}
+
+# If help, print help statement and quit
+if($help) {
+   print "$help_message";
+   exit;
+}
+
+# Genome and Reads files must be specified and exist, or exit with usage
+my $genome = pop @ARGV;
+unless(-r $genome) {
+    print "FATAL: No genome file found.\n$help_message";
+    exit;
+}
+
+my $reads = pop @ARGV;
+unless(-r $reads) {
+    print "FATAL: No reads file found.\n$help_message";
+    exit;
+}
+
+# Validate options
+# mismatches must be an integer between 0 and 2
+unless(($mismatches =~ /^\d+$/) and ($mismatches >= 0) and ($mismatches <= 1)) {
+    print "FATAL: option --mismatches must be an integer between 0 and 1\n$help_message\n";
+    exit;
+}
+
+# aln_cores must be an integer between 1 and 100
+unless(($aln_cores =~ /^\d+$/) and ($aln_cores >= 1) and ($aln_cores <= 100)) {
+    print "FATAL: option --aln_cores must be an integer between 1 and 100\n$help_message\n";
+    exit;
+}
+
+# If the adapter is specified, it must be ATGCatgc 8 or more
+if($adapter) {
+    unless($adapter =~ /^[ATGCatgc]{8,}$/) {
+	print "FATAL: option --adapter must be a string of 8 or more ATGCatgc characters.\n$help_message\n";
+	exit;
+    }
+}
+
+# Determine reads file type based on the extension, or die tryin
+my $read_format;
+my $read_extension;
+if(($reads =~ /\.fa$/) or ($reads =~ /\.fasta$/)) {
+    $read_format = "f";
+    $read_extension = $&;
+} elsif (($reads =~ /\.fq$/) or ($reads =~ /\.fastq$/)) {
+    $read_format = "q";
+    $read_extension = $&;
+} elsif ($reads =~ /\.csfasta$/) {
+    $read_format = "C";
+    $read_extension = $&;
+} else {
+    print "FATAL: Could not determine format of reads file $reads .. extension must be .fa, .fasta, .fq, or .fastq\n$help_message\n";
+    exit;
+}
+	 
+# Begin reporting to user
+unless($quiet) {
+    print STDERR "\nGRASS version $version_num\n";
+    print STDERR `date`;
+    print STDERR "Host: ";
+    print STDERR `hostname`;
+    print STDERR "Working Directory: ";
+    print STDERR `pwd`;
+    print STDERR "Genome: $genome\n";
+    print STDERR "Reads: $reads\n";
+    print STDERR "Reads format: $read_format\n";
+    print STDERR "Adapter: ";
+    if($adapter) {
+	print STDERR "$adapter\n";
+    } else {
+	print STDERR "None. Reads are assumed to be trimmed already.\n";
+    }
+    print STDERR "Max Mismatches: $mismatches\n";
+    print STDERR "Processor cores for bowtie: $aln_cores\n";
+    print STDERR "\nChecking dependencies\n";
+}
+
+# Dependency checks
+my $c_query = "samtools";
+
+my $samtools_check = check_install($c_query);
+if($samtools_check) {
+    unless($quiet) {
+	print STDERR "\tsamtools: $samtools_check\n";
+    }
+} else {
+    unless ($quiet) {
+	print STDERR "\tsamtools: FAIL - ABORT because no samtools installation found\n";
+    }
+    exit;
+}
+
+$c_query = "bowtie";
+my $bowtie_check = check_install($c_query);
+if($bowtie_check) {
+    unless($quiet) {
+	print STDERR "\tbowtie: $bowtie_check\n";
+    }
+} else {
+    unless ($quiet) {
+	print STDERR "\tbowtie: FAIL - ABORT because no bowtie installation found\n";
+    }
+    exit;
+}
+
+$c_query = "gzip";
+my $gzip_check = check_install($c_query);
+if($gzip_check) {
+    unless($quiet) {
+	print STDERR "\tgzip: $gzip_check\n";
+    }
+} else {
+    unless ($quiet) {
+	print STDERR "\tgzip: FAIL - ABORT because no gzip installation found\n";
+    }
+    exit;
+}
+
+# Check for indexed reference genome .. expect to find .1.ebwt, .2.ebwt, .3.ebwt, .4.ebwt, .rev.1.ebwt, .rev.2.ebwt
+# If colorspace, expect to find .cs.1.ebwt, .cs.2.ebwt, .cs.3.ebwt, .cs.4.ebwt, .cs.rev.1.ebwt, .cs.rev.2.ebwt
+my $bowtie_index_check = check_bowtie_index($genome,$read_format);
+if($bowtie_index_check) {
+    unless($quiet) {
+	print STDERR "bowtie index files for genome $genome: Found\n";
+    }
+} else {
+    unless($quiet) {
+	print STDERR "bowtie index files for genome $genome: NOT FOUND .. attempting to build using bowtie-build ..";
+    }
+    $c_query = "bowtie-build";
+    my $bb_check = check_install($c_query);
+    if($bb_check) {
+	if($read_format eq "C") {
+	    my $c_genome_base = "$genome" . ".cs";
+	    system "bowtie-build -C $genome $c_genome_base > /dev/null";
+	} else {
+	    system "bowtie-build $genome $genome > /dev/null";
+	}
+	$bowtie_index_check = check_bowtie_index($genome,$read_format);
+	if($bowtie_index_check) {
+	    unless($quiet) {
+		print STDERR " Successful\n";
+	    }
+	} else {
+	    unless($quiet) {
+		print STDERR " FAILED - ABORTING\n";
+	    }
+	    exit;
+	}
+    } else {
+	unless ($quiet) {
+	    print STDERR " bowtie-build not installed. FATAL\n";
+	}
+	exit;
+    }
+}
+
+
+# Perform 3' adapter trimming, if requested
+my $trimmed;
+if($adapter) {
+    if($read_format eq "f") {
+	$trimmed = trim_FA($reads,$adapter,$quiet);
+    } elsif ($read_format eq "q") {
+	$trimmed = trim_FQ($reads,$adapter,$quiet);
+    } elsif ($read_format eq "C") {
+	$trimmed = trim_CS($reads,$adapter,$quiet);
+    }
+} else {
+    $trimmed = $reads;
+}
+unless (-r $trimmed) {
+    die "FATAL: Expected file of trimmed reads $trimmed was not found\n";
+}
+
+# bowtie call
+my ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n) = call_bowtie($genome,$trimmed,$read_format,$quiet,$aln_cores,$mismatches);
+unless(($unmap_n) or ($unq_n) or ($two_n) or ($five_n) or ($mmap_n)) {
+    die "FATAL: falled to complete call_bowtie sub-routine\n";
+}
+
+# Get bin densities from the _unique_sorted.bam file
+my %bin_dens = ();
+my $base = $trimmed;
+$base =~ s/\.[^\/]+$//g;
+my $unq_sort_bam = "$base" . "_unique_sorted.bam";
+my $unmapped_sort_bam = "$base" . "_unmapped_sorted.bam";
+unless($quiet) {
+    print STDERR "Gathering densities from uniquely placed reads ";
+}
+
+get_bin_dens(\$unq_sort_bam,\%bin_dens);
+unless($quiet) {
+    print STDERR "Done\n";
+}
+
+# Place the 2 -mapped reads
+my $two_sam_gz = "$base" . "_2.sam.gz";
+unless($quiet) {
+    print STDERR "Deciding on reads with 2 possible placements\n";
+}
+my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n);
+
+unless(-r $two_bam) {
+    die "FATAL: unknown failure .. expected file $two_bam not found\n";
+}
+
+# Update bin densities
+unless($quiet) {
+    print STDERR "Updating densities ";
+}
+
+get_bin_dens(\$two_bam,\%bin_dens);
+unless($quiet) {
+    print STDERR "Done\n";
+}
+
+# Place the 3-5 mapped reads
+my $five_sam_gz = "$base" . "_5.sam.gz";
+unless($quiet) {
+    print STDERR "Deciding on reads with 3-5 possible placements\n";
+}
+my $five_bam = decider(\%bin_dens,\$five_sam_gz,\$quiet,\$five_n);
+
+unless(-r $five_bam) {
+    die "FATAL: unknown failure .. expected file $five_bam not found\n";
+}
+
+# Update bin densities
+unless($quiet) {
+    print STDERR "Updating densities ";
+}
+
+get_bin_dens(\$five_bam,\%bin_dens);
+unless($quiet) {
+    print STDERR "Done\n";
+}
+
+# Place the >5 mapped reads
+my $mm_sam_gz = "$base" . "_mmapped.sam.gz";
+unless($quiet) {
+    print STDERR "Deciding on reads with >5 possible placements\n";
+}
+my $mm_bam = decider(\%bin_dens,\$mm_sam_gz,\$quiet,\$mmap_n);
+
+unless(-r $mm_bam) {
+    die "FATAL: unknown failure .. expected file $mm_bam not found\n";
+}
+
+# Now, merge 
+unless($quiet) {
+    print STDERR "Merging to create final alignment";
+}
+my $final_bam = $reads;
+$final_bam =~ s/$read_extension/\.bam/g;
+system "samtools merge $final_bam $unq_sort_bam $two_bam $five_bam $mm_bam $unmapped_sort_bam";
+unless($quiet) {
+    print STDERR " Done\n";
+}
+
+# clean up
+system "rm -f $unq_sort_bam $two_bam $five_bam $mm_bam $unmapped_sort_bam";
+
+
+######
+sub decider {
+    my($densities,$sam_gz,$quiet,$n_to_place) = @_; ## passed by references .. hash and string and string and string
+    (open(SAM, "gzip -d -c $$sam_gz |")) || return 0;
+    
+    my $r = 0;  ## unguided, random placements
+    my $p = 0;  ## placed reads
+    
+    # open output stream
+    my $out_base = $$sam_gz;
+    $out_base =~ s/\.sam\.gz/_placed_sorted/g;
+    (open(BAM, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $out_base 2> /dev/null")) || return 0;
+    
+    # progress
+    my $one_percent = int (0.01 * $$n_to_place);
+    my $xx = 0;
+    unless($$quiet) {
+	print STDERR "\tProgress \(dots indicate 1 percent complete\):\n\t";
+    }
+    
+    # begin parsing
+    my $last_read = "NULL";
+    my @fields = ();
+    my @lines = ();
+    my @scores = ();
+    my $keep;
+    my $score;
+    my $line;
+    while (<SAM>) {
+	if($_ =~ /^\@/) {
+	    # header
+	    print BAM "$_";
+	} else {
+	    @fields = split ("\t", $_);
+	    $line = $_;
+	    if(($fields[0] ne $last_read) and
+	       ($last_read ne "NULL")) {
+		
+		# process and output
+
+		$keep = get_keeper(\@scores,\@lines,\$r,\$p);
+		print BAM "$keep";
+		
+		# reset
+		@lines = ();
+		@scores = ();
+		
+		# progress
+		++$xx;
+		if($xx >= $one_percent) {
+		    unless($$quiet) {
+			print STDERR ".";
+		    }
+		    $xx = 0;
+		}
+	    }
+	    $score = score_line(\$line,\%$densities);
+	    push(@scores,$score);
+	    push(@lines,$_);
+	    $last_read = $fields[0];
+	}
+    }
+    close SAM;
+    
+    # process and output
+    if($line) {
+	@scores = score_line(\$line,\%$densities);
+	$keep = get_keeper(\@scores,\@lines,\$r,\$p);
+	print BAM "$keep";
+    }
+    
+    close BAM;
+    
+    unless($$quiet) {
+	my $all = $r + $p;
+	my $per_r = sprintf("%.1f",(100*($r / $all)));
+	my $per_p = sprintf("%.1f",(100*($p / $all)));
+	print STDERR " Done\n";
+	print STDERR "\tReads placed based on density: $p \/ $all \($per_p\%\)\n";
+	print STDERR "\tReads randomly placed: $r \/ $all \($per_r\%\)\n";
+    }
+    system "rm -f $$sam_gz";
+
+    my $bam = "$out_base" . ".bam";
+    return $bam;
+}
+
+sub score_line {
+    my($line,$densities) = @_; ## passed by reference .. string, hash
+
+    my $bin;
+    my @fields = ();
+    my $max = 0;
+    my $this;
+    my $key;
+    @fields = split ("\t", $$line);
+    $bin = int ($fields[3] / 50);
+    for(my $i = $bin; $i > ($bin - 5); --$i) {
+	$key = "$fields[2]" . ":" . "$i";
+	if(exists($$densities{$key})) {
+	    $this = $$densities{$key};
+	} else {
+	    $this = 0;
+	}
+	if($this > $max) {
+	    $max = $this;
+	}
+    }
+    return $max;
+}
+
+sub get_keeper {
+    my($scores,$lines,$r,$p) = @_; ## passed by reference .. array, array, string, string
+    my $best;
+    my $best_score = 0;
+    my $i = 0;
+    my $output;
+    my %i_to_score = ();
+    my $total = 0;
+    my $score;
+
+    # hash them and count them
+    foreach $score (@$scores) {
+	$i_to_score{$i} = $score;
+	$total += $score;
+	++$i;
+    }
+    
+    if($total == 0) {
+	# no guidance, randomly select
+	++$$r;
+	$best = int(rand(scalar(@$lines)));
+	$output = $$lines[$best];
+	$output =~ s/\n/\tXY:Z:R\n/g;
+	return $output;
+    } else {
+	# placement
+	my @keys = sort {$i_to_score{$b} <=> $i_to_score{$a}} keys %i_to_score;
+	++$$p;
+	my $keep;
+	my $keep_ok;
+	until($keep_ok) {
+	    my $maybe = shift @keys;
+	    my $maybe_score = $i_to_score{$maybe};
+	    my $chance = $maybe_score / $total;
+	    if($chance == 1) {
+		$keep = $maybe;
+		$keep_ok = 1;
+	    } else {
+		my $x = rand();
+		if($x <= $chance) {
+		    $keep = $maybe;
+		    $keep_ok = 1;
+		}
+	    }
+	    $total -= $maybe_score;
+	}
+	$output = $$lines[$keep];
+	$output =~ s/\n/\tXY:Z:P\n/g;
+	return $output;
+	last;
+    }
+}
+	
+    
+sub get_bin_dens {
+    my($bam,$bin_dens) = @_;  ## by reference. string, hash
+    (open(DEPTH, "samtools depth $$bam |")) || return 0;
+    my @fields = ();
+    my @bins = ();
+    my $key;
+    while (<DEPTH>) {
+	chomp;
+	@fields = split ("\t", $_);
+	@bins = what_bins($fields[1]);
+	foreach my $bin (@bins) {
+	    $key = "$fields[0]" . ":" . "$bin";
+	    $$bin_dens{$key} += $fields[-1];
+	}
+    }
+    close DEPTH;
+    
+    # test
+    #my @keys = sort(keys(%bin_dens));
+    #foreach my $k (@keys) {
+#	print "$k\t$bin_dens{$k}\n";
+  #  }
+   # exit;
+}
+
+sub what_bins {
+    my ($loc) = @_;
+    my $bin = int ($loc / 50);
+    my @bins = ();
+    if($bin >= 0) {
+	push(@bins, $bin);
+    }
+    for(my $i = 1; $i < 5; ++$i) {
+	--$bin;
+	if($bin >= 0) {
+	    push(@bins, $bin);
+	}
+    }
+    return @bins;
+}
+    
+
+sub call_bowtie {
+    my($genome,$reads,$read_format,$quiet,$cores,$v) = @_;
+    my $bowtie_call;
+    if($read_format eq "C") {
+	my $c_genome_base = "$genome" . ".cs";
+	$bowtie_call = "bowtie -f -C -v $v --all --best --strata --col-keepends -p $cores -S $c_genome_base $reads";
+    } else {
+	$bowtie_call = "bowtie \-$read_format -v $v --all --best --strata -p $cores -S $genome $reads";
+    }
+    unless($quiet) {
+	print STDERR "Calling bowtie with command:\n\t$bowtie_call ...\n";
+    }
+    # progress counter
+    my $reads_done = 0;
+    my $century = 0;
+    my $mill = 0;
+
+    # strip the extension
+    my $base = $reads;
+    $base =~ s/\.[^\/]+$//g;
+    
+    # open output streams
+    my $unmapped = "$base" . "_unmapped_sorted";
+    (open(UNMAPPED, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $unmapped 2> /dev/null")) || return 0;
+    my $unique_bam_prefix = "$base" . "_unique_sorted";
+    (open(UNIQUE, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $unique_bam_prefix 2> /dev/null")) || return 0;
+    my $two_mapped = "$base" . "_2.sam.gz";
+    (open(TWO, "| gzip > $two_mapped")) || return 0;
+    my $five_mapped = "$base" . "_5.sam.gz";
+    (open(FIVE, "| gzip > $five_mapped")) || return 0;
+    my $multi_mapped = "$base" . "_mmapped.sam.gz";
+    (open(MMAP, "| gzip > $multi_mapped")) || return 0;
+    
+    # Counters
+    my $unmap_n = 0;
+    my $unq_n = 0;
+    my $two_n = 0;
+    my $five_n = 0;
+    my $mmap_n = 0;
+    
+    # open bowtie stream
+    (open(BOWTIE, "$bowtie_call 2> /dev/null |")) || return 0;
+    
+    # parse
+    my $last_read = "NULL";
+    my $this_read;
+    my $this_flag;
+    my $aln_count = 0;
+    my $string;
+    while (<BOWTIE>) {
+	# headers go to every output stream
+	if($_ =~ /^@/) {
+	    print UNMAPPED "$_";
+	    print UNIQUE "$_";
+	    print TWO "$_";
+	    print FIVE "$_";
+	    print MMAP "$_";
+	} else {
+	    if($_ =~ /^([^\t]+)\t(\d+)\t/) {
+		$this_read = $1;
+		$this_flag = $2;
+	    } else {
+		die "\nFATAL: Failed to determine read name and flag rom SAM line $_";
+	    }
+	    if(($this_read ne $last_read) and
+	       ($last_read ne "NULL")) {
+		# progress
+		++$reads_done;
+		if($reads_done >= 100000) {
+		    ++$century;
+		    $reads_done = 0;
+		    unless($quiet) {
+			print STDERR ".";
+		    }
+		    if($century >= 10) {
+			++$mill;
+			$century = 0;
+			unless($quiet) {
+			    print STDERR " $mill million reads processed and counting\n";
+			}
+		    }
+		}
+		process_string(\$string,\$aln_count);  ## adds XX:i to all, and XY:Z to unmapped and unique mapped
+		
+		if($aln_count == 0) {
+		    ++$unmap_n;
+		    print UNMAPPED "$string";
+		} elsif ($aln_count == 1) {
+		    print UNIQUE "$string";
+		    ++$unq_n;
+		} elsif ($aln_count == 2) {
+		    print TWO "$string";
+		    ++$two_n;
+		} elsif (($aln_count >= 3) and ($aln_count <= 5)) {
+		    print FIVE "$string";
+		    ++$five_n;
+		} elsif ($aln_count > 5) {
+		    print MMAP "$string";
+		    ++$mmap_n;
+		}
+		# clear
+		$string = '';
+		$aln_count = 0;
+	    }
+	    $string .= $_;
+	    unless($this_flag & 4) {
+		++$aln_count;
+	    }
+	    $last_read = $this_read;
+	}
+    }
+    # Last read
+    process_string(\$string,\$aln_count);  ## adds XX:i
+    
+    if($aln_count == 0) {
+	++$unmap_n;
+	print UNMAPPED "$string";
+    } elsif ($aln_count == 1) {
+	print UNIQUE "$string";
+	++$unq_n;
+    } elsif ($aln_count == 2) {
+	print TWO "$string";
+	++$two_n;
+    } elsif (($aln_count >= 3) and ($aln_count <= 5)) {
+	print FIVE "$string";
+	++$five_n;
+    } elsif ($aln_count > 5) {
+	print MMAP "$string";
+	++$mmap_n;
+    }
+    
+    close BOWTIE;
+    close UNMAPPED;
+    close UNIQUE;
+    close TWO;
+    close FIVE;
+    close MMAP;
+    
+    # get some stats
+    my $total_n = $unmap_n + $unq_n + $two_n + $five_n + $mmap_n;
+    my $unmap_per = sprintf("%.1f",(100*($unmap_n / $total_n)));
+    my $unq_per = sprintf("%.1f",(100*($unq_n / $total_n)));
+    my $two_per = sprintf("%.1f",(100*($two_n / $total_n)));
+    my $five_per = sprintf("%.1f",(100*($five_n / $total_n)));
+    my $mmap_per = sprintf("%.1f",(100*($mmap_n / $total_n)));
+    
+    unless($quiet) {
+	print STDERR " Done\n";
+	print STDERR "Unmapped Reads: $unmap_n \/ $total_n \($unmap_per\%\)\n";
+	print STDERR "Uniquely Placed Reads: $unq_n \/ $total_n \($unq_per\%\)\n";
+	print STDERR "Reads with two possible placements: $two_n \/ $total_n \($two_per\%\)\n";
+	print STDERR "Reads with three, four, or five possible placements: $five_n \/ $total_n \($five_per\%\)\n";
+	print STDERR "Reads with more than five possible placements:  $mmap_n \/ $total_n \($mmap_per\%\)\n";
+    }
+    return ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n);
+}
+
+sub process_string {
+    my($input,$x) = @_; ## by reference
+    my $tag = "\tXX:i:$$x";
+    if($$x == 0) {
+	$tag .= "\tXY:Z:N\n"; ## N means unmapped
+    } elsif ($$x == 1) {
+	$tag .= "\tXY:Z:U\n"; ## U means uniquely placed
+    } else {
+	$tag .= "\n";
+    }
+    $$input =~ s/\n/$tag/g;
+}
+    
+sub check_bowtie_index {
+    my ($genome,$read_format) = @_;
+    if(($read_format eq "f") or ($read_format eq "q")) {
+	my $one = "$genome" . ".1.ebwt";
+	my $two = "$genome" . ".2.ebwt";
+	my $three = "$genome" . ".3.ebwt";
+	my $four = "$genome" . ".4.ebwt";
+	my $rev1 = "$genome" . ".rev.1.ebwt";
+	my $rev2 = "$genome" . ".rev.2.ebwt";
+	if ((-r $one) and
+	    (-r $two) and
+	    (-r $three) and
+	    (-r $four) and
+	    (-r $rev1) and
+	    (-r $rev2)) {
+	    return 1;
+	} else {
+	    return 0;
+	}
+    } elsif ($read_format eq "C") {
+	my $one = "$genome" . ".cs.1.ebwt";
+	my $two = "$genome" . ".cs.2.ebwt";
+	my $three = "$genome" . ".cs.3.ebwt";
+	my $four = "$genome" . ".cs.4.ebwt";
+	my $rev1 = "$genome" . ".cs.rev.1.ebwt";
+	my $rev2 = "$genome" . ".cs.rev.2.ebwt";
+	if ((-r $one) and
+	    (-r $two) and
+	    (-r $three) and
+	    (-r $four) and
+	    (-r $rev1) and
+	    (-r $rev2)) {
+	    return 1;
+	} else {
+	    return 0;
+	}
+    }
+}
+
+sub check_install {
+    my ($query) = @_;
+    (open(CHECK, "which $query |")) || return 0;
+    my $check = <CHECK>;
+    close CHECK;
+    chomp $check;
+    return $check;
+}
+
+sub get_help {
+    my ($version_num) = @_;
+    my $help = "
+GRASS: Guided Repetitive Alignments for SmallRNA-Seq 
+version $version_num
+
+USAGE: GRASS [options] [reads.fa\/.fasta\/.fq\/.fastq\/.csfasta] [genome.fa]
+
+DEPENDENCIES:
+   samtools
+   bowtie
+   gzip
+
+OPTIONS:
+   --version : print version and quit
+   --help: print this message and quit
+   --quiet: suppress progress and error reporting
+   --mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
+   --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-100.
+   --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adpater trimming is enabled.
+
+";
+    return $help;
+}
+
+sub trim_FA {
+    my($untrimmed,$adapter,$quiet) = @_;
+    unless($quiet) {
+	print STDERR "\nPerforming 3' adapter trimming of file $reads with adapter $adapter ... ";
+    }
+
+    (open(IN, "$untrimmed")) || return 0;
+    my $trimmedFA = "$untrimmed";
+    $trimmedFA =~ s/\.[^\/]+$//g;  ## strip any extension
+    $trimmedFA .= "_trimmed.fasta"; ## add new extension
+    (open(OUT, ">$trimmedFA")) || return 0;
+    my $header;
+    my $trim_len;
+    my $no_insert = 0; ## includes adapter-only and no-adapter cases
+    my $too_short = 0;
+    my $amb = 0;
+    my $ok;
+    my $trim_seq;
+    while (<IN>) {
+	chomp;
+	if($_ =~ /^\#/) {
+	    next;
+	} elsif($_ =~ /^>/) {
+	    $header = $_;
+	} else {
+	    $trim_len = 0;
+	    while ($_ =~ /$adapter/ig) {
+		$trim_len = (pos $_) - (length $adapter);
+	    }
+	    if($trim_len == 0) {
+		++$no_insert;
+	    } elsif ($trim_len < 15) {
+		++$too_short;
+	    } else {
+		$trim_seq = substr($_,0,$trim_len);
+		if($trim_seq =~ /[^ATGCatcg]/) {
+		    ++$amb;
+		} else {
+		    ++$ok;
+		    print OUT "$header\n$trim_seq\n";
+		}
+	    }
+	}
+    }
+    close IN;
+    close OUT;
+    unless($quiet) {
+	print STDERR " Done\n";
+	print STDERR "\tNo insert \(includes adapter-only and no-adapter cases combined\): $no_insert\n";
+	print STDERR "\tToo short \(less than 15nts\): $too_short\n";
+	print STDERR "\tAmbiguous bases after trimming: $amb\n";
+	print STDERR "\tOK - output: $ok\n";
+	print STDERR "\tResults in file $trimmedFA\n";
+    }
+    return $trimmedFA;
+}
+
+sub trim_FQ {
+    my($untrimmed,$adapter,$quiet) = @_;
+    unless($quiet) {
+	print STDERR "\nPerforming 3' adapter trimming of file $reads with adapter $adapter ... ";
+    }
+    (open(IN, "$untrimmed")) || return 0;
+    my $trimmedFQ = "$untrimmed";
+    $trimmedFQ =~ s/\.[^\/]+$//g; ## strip extension
+    $trimmedFQ .= "_trimmed.fastq"; ## add new extension
+    (open(OUT, ">$trimmedFQ")) || return 0;
+    my $header;
+    my $trim_len;
+    my $no_insert = 0; ## includes adapter-only and no-adapter cases
+    my $too_short = 0;
+    my $amb = 0;
+    my $ok;
+    my $trim_seq;
+    my $plus;
+    my $seq;
+    my $qual;
+    my $trim_qual;
+    while (<IN>) {
+	chomp;
+	$header = $_;
+	$seq = <IN>;
+	chomp $seq;
+	$plus = <IN>;
+	chomp $plus;
+	$qual = <IN>;
+	chomp $qual;
+	
+	# crude validation
+	unless(($header =~ /^\@/) and
+	       ($plus =~ /^\+/)) {
+	    print STDERR "\nFATAL: FASTQ format parse error in sub-routine trim_FQ\n";
+	    exit;
+	}
+	$trim_len = 0;
+	while ($seq =~ /$adapter/ig) {
+	    $trim_len = (pos $seq) - (length $adapter);
+	}
+	if($trim_len == 0) {
+	    ++$no_insert;
+	} elsif ($trim_len < 15) {
+	    ++$too_short;
+	} else {
+	    $trim_seq = substr($seq,0,$trim_len);
+	    if($trim_seq =~ /[^ATGCatcg]/) {
+		++$amb;
+	    } else {
+		++$ok;
+		$trim_qual = substr($qual,0,$trim_len);
+		print OUT "$header\n$trim_seq\n$plus\n$trim_qual\n";
+	    }
+	}
+    }
+    
+    close IN;
+    close OUT;
+    unless($quiet) {
+	print STDERR " Done\n";
+	print STDERR "\tNo insert \(includes adapter-only and no-adapter cases combined\): $no_insert\n";
+	print STDERR "\tToo short \(less than 15nts\): $too_short\n";
+	print STDERR "\tAmbiguous bases after trimming: $amb\n";
+	print STDERR "\tOK - output: $ok\n";
+	print STDERR "\tResults in file $trimmedFQ\n";
+    }
+
+    return $trimmedFQ;
+}
+
+sub trim_CS {
+    my($untrimmed,$adapter,$quiet) = @_;
+    
+    my $cs_used_adapter = adapter2cs($adapter);
+    
+    unless($quiet) {
+	print STDERR "\nAdapter trimming file $untrimmed with adapter $adapter (translated to $cs_used_adapter) ...";
+    }
+    
+    (open(IN, "$untrimmed")) || return 0;
+    my $trimmedCS = "$untrimmed";
+    $trimmedCS =~ s/\.[^\/]+$//g;  #### s/\..*$//g;  ## strip any extension
+    $trimmedCS .= "_trimmed.csfasta"; ## add new extension
+    (open(OUT, ">$trimmedCS")) || return 0;
+	
+    my $header;
+    my $trim_len;
+    my $no_insert = 0; ## includes adapter-only and no-adapter cases
+    my $too_short = 0;
+    my $amb = 0;
+    my $ok;
+    my $trim_seq;
+    my $cs_l_num = 0;
+
+    while (<IN>) {
+	chomp;
+	++$cs_l_num;
+	if($_ =~ /^\#/) {
+	    next;
+	}
+	if($_ =~ /^>/) {
+	    $header = $_;
+	} else {
+	    $trim_len = 0;
+	    while ($_ =~ /$cs_used_adapter/ig) {
+		$trim_len = (pos $_) - (length $cs_used_adapter) - 1; # subtract 1 to remove the hybrid color .. leading T is still included, so sRNA length is trim_len - 1
+	    }
+	    if($trim_len <= 1) {  ## 1 is no insert for colorspace .. leading T still there
+		++$no_insert;
+	    } elsif (($trim_len - 1) < 15) {  ## accounts for leading T (or other base key)
+		++$too_short;
+	    } else {
+		$trim_seq = substr($_,0,$trim_len);  ## because of above, this also chops the hybrid color
+		if($trim_seq =~ /^[ATGC][0123]+$/) {
+		    ++$ok;
+		    print OUT "$header\n$trim_seq\n";
+		} else {
+		    ++$amb;
+		}
+	    }
+	}
+    }
+    close IN;
+    close OUT;
+    
+    unless($quiet) {
+	print STDERR " Done\n";
+	print STDERR "\tNo insert \(includes adapter-only and no-adapter cases combined\): $no_insert\n";
+	print STDERR "\tToo short \(less than 15nts\): $too_short\n";
+	print STDERR "\tAmbiguous bases after trimming: $amb\n";
+	print STDERR "\tOK - output: $ok\n";
+	print STDERR "\tResults in file $trimmedCS\n";
+    }
+    
+    return $trimmedCS;
+}
+
+sub adapter2cs {
+    my($base_adapter) = @_;
+    $base_adapter = uc $base_adapter;
+    unless($base_adapter =~ /^[ATGC]+$/) {
+        print STDERR "\nFATAL: Invlaid adapter $base_adapter found in sub-routine adapter2cs\n";
+	exit;
+    }
+    my %colors = (
+        'AA' => 0,
+        'CC' => 0,
+        'GG' => 0,
+        'TT' => 0,
+        'AC' => 1,
+        'CA' => 1,
+        'GT' => 1,
+        'TG' => 1,
+        'AG' => 2,
+        'CT' => 2,
+        'GA' => 2,
+        'TC' => 2,
+        'AT' => 3,
+        'CG' => 3,
+        'GC' => 3,
+        'TA' => 3,
+        );
+    my $dibase;
+    my $color_adapter;
+    my @letters = split('', $base_adapter);
+    for(my $i = 0; $i <= ((scalar @letters) - 2); ++$i) {
+        $dibase = "$letters[$i]" . "$letters[($i + 1)]";
+        unless(exists($colors{$dibase})) {
+            print STDERR "\nFATAL: Failure to lookup the dibase $dibase in sub-routine adapter2cs\n";
+            exit;
+	}
+        $color_adapter .= $colors{$dibase};
+    }
+    return $color_adapter;
+}
+
+ __END__
+
+=head1 DOCUMENTATION IS NOT COMPLETED!
+
+=head1 SYNOPSIS
+
+GRASS: Guided Repetitive Alignments for SmallRNA-Seq
+
+=head1 LICENSE
+
+Copyright (C) 2014 Michael J. Axtell                                                             
+                                                                                                 
+This program is free software: you can redistribute it and/or modify                             
+it under the terms of the GNU General Public License as published by                             
+the Free Software Foundation, either version 3 of the License, or                                
+(at your option) any later version.                                                              
+                                                                                                 
+This program is distributed in the hope that it will be useful,                                  
+    but WITHOUT ANY WARRANTY; without even the implied warranty of                                   
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                                    
+GNU General Public License for more details.                                                     
+                                                                                                 
+You should have received a copy of the GNU General Public License                                
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+=head1 CITATION
+
+None yet
+
+=head1 AUTHOR
+
+Michael J. Axtell, Penn State University, mja18@psu.edu
+
+=head1 DEPENDENCIES
+
+perl (version 5; <www.perl.org>) .. installed at /usr/bin/perl
+samtools <http://samtools.sourceforge.net/> .. installed to your PATH
+bowtie <http://bowtie-bio.sourceforge.net/index.shtml> .. installed to your PATH
+
+=head1 INSTALL
+
+Install dependencies (see above), and then place the GRASS script in your PATH
+
+=head1 USAGE
+
+GRASS [options] [reads.fa\/.fasta\/.fq\/.fastq] [genome.fa]
+
+=head1 OPTIONS
+
+--version: print version and quit
+
+--help: print usage and option information, then quit
+
+--quiet: suppress progress reports
+
+--mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
+
+--aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-00.
+
+--adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adapter trimming is enabled.
+
+=head1 INPUT FILES
+
+=head2 Small RNA-seq data
+
+Files must be in FASTA, FASTQ, or colorspace-fasta format. File extensions must be used to indicate the format. .fasta and .fa are acceptable for FASTA files. .fastq and .fq are accetpable for colorspace files. .csfasta must be used for color-space files. There is no support for paired-end reads.
+
+Colorspace data is assumed to conform to colorspace-FASTA specifications (beginning with a nucleotide, followed by a string of colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are provided, it is assumed that the 'hybrid' color at the 3' end has been removed. If colorspace data are trimmed by GRASS, the hybrid color at the 3' end will be removed.
+
+=head2 Reference genome
+
+File must be in FASTA format. Chromosome names will be truncated after the first white-space encountered.
+
+=head1 METHODS
+
+=head2 Adapter trimming - FASTA
+
+For each read, the 3'-most exact match to the supplied adapter sequence (via option --adapter) is found and trimmed off. Trimmed data shorter than 15nts are suppressed from output. In addition, reads with non ATGCatgc characters after trimming are also suppressed. Comment lines in the original file are ignored, and will not be output to the trimmed file.
+
+=head2 Adapter trimming - FASTQ
+
+Identical to trimming for FASTA data, with the addition of trimming the quality values to the same length as the trimmed sequence data.
+
+=head2 Adapter trimming - Color-space fasta
+
+
+
+
+
+
+
+
