@@ -209,22 +209,21 @@ unless (-r $trimmed) {
     die "FATAL: Expected file of trimmed reads $trimmed was not found\n";
 }
 
-# Compress trimmed reads to a non-redundant file, hashing duplicates and their quals (for fastq)
-my %synonyms = ();
+# Compress trimmed reads to a non-redundant file, hashing duplicates
+# If fastq, compressed is always written as a FASTA
+# headers are re-named, arbitrarily to save memory
+
 unless($quiet) {
     print STDERR "Compressing trimmed reads to a set of non-redundant queries ..";
 }
-my $nr_trimmed_file = get_nr_trimmed(\$trimmed,\$read_format,\%synonyms,\$quiet);
+my $nr_trimmed_file = get_nr_trimmed(\$trimmed,\$read_format,\$quiet);
 
 
 # bowtie call
-my ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n) = call_bowtie(\$genome,\$trimmed,\$nr_trimmed_file,\$read_format,\$quiet,\$aln_cores,\$mismatches,\%synonyms);
+my ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n) = call_bowtie(\$genome,\$trimmed,\$nr_trimmed_file,\$read_format,\$quiet,\$aln_cores,\$mismatches);
 unless(($unmap_n) or ($unq_n) or ($two_n) or ($five_n) or ($mmap_n)) {
     die "FATAL: falled to complete call_bowtie sub-routine\n";
 }
-
-# remove the temporary condensed query file
-system "rm -f $nr_trimmed_file";
 
 # Get bin densities from the _unique_sorted.bam file
 my %bin_dens = ();
@@ -250,7 +249,7 @@ unless($quiet) {
     print STDERR "Deciding on reads with 2 possible placements\n";
 }
 
-my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n,\$base,\%synonyms);
+my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n,\$base);
 
 
 unless(-r $two_bam) {
@@ -272,7 +271,7 @@ my $five_sam_gz = "$nr_base" . "_5.sam.gz";
 unless($quiet) {
     print STDERR "Deciding on reads with 3-5 possible placements\n";
 }
-my $five_bam = decider(\%bin_dens,\$five_sam_gz,\$quiet,\$five_n,\$base,\%synonyms);
+my $five_bam = decider(\%bin_dens,\$five_sam_gz,\$quiet,\$five_n,\$base);
 
 unless(-r $five_bam) {
     die "FATAL: unknown failure .. expected file $five_bam not found\n";
@@ -293,7 +292,7 @@ my $mm_sam_gz = "$nr_base" . "_mmapped.sam.gz";
 unless($quiet) {
     print STDERR "Deciding on reads with >5 possible placements\n";
 }
-my $mm_bam = decider(\%bin_dens,\$mm_sam_gz,\$quiet,\$mmap_n,\$base,\%synonyms);
+my $mm_bam = decider(\%bin_dens,\$mm_sam_gz,\$quiet,\$mmap_n,\$base);
 
 unless(-r $mm_bam) {
     die "FATAL: unknown failure .. expected file $mm_bam not found\n";
@@ -316,7 +315,7 @@ system "rm -f $unq_sort_bam $two_bam $five_bam $mm_bam $unmapped_sort_bam";
 
 ######
 sub get_nr_trimmed {
-    my($in,$format,$hash,$quiet) = @_; ## by reference .. string, string, hash
+    my($in,$format,$quiet) = @_; ## by reference .. string, string, string
     (open(IN, "$$in")) || return 0;
     my $head;
     my $seq;
@@ -332,31 +331,23 @@ sub get_nr_trimmed {
 	}
 	if($$format eq "q") {
 	    $head = $_;
-	    $head =~ s/\s+.*$//g; ## names are limited to everything before the first whitespace
-	    $head =~ s/^\@//g;  ## no leading @ characters for name
 	    $seq = <IN>;
 	    chomp $seq;
 	    $plus = <IN>;
 	    $qual = <IN>;
-	    chomp $qual;
-	    $val = "$head" . "\n" . "$qual";
-	    push(@{$temp_hash{$seq}}, $val);
+	    ++$temp_hash{$seq};
 	    ++$reads_in;
 	} else {
 	    $head = $_;
-	    $head =~ s/\s+.*$//g; ## names are limited to everything before the first whitespace
-	    $head =~ s/^>//g; ## no leading > characters
 	    $seq = <IN>;
 	    chomp $seq;
-	    push(@{$temp_hash{$seq}}, $head);
+	    ++$temp_hash{$seq};
 	    ++$reads_in;
 	}
     }
     close IN;
     my $out = "condensed_queries";
-    if($$format eq "q") {
-	$out .= ".fastq";
-    } elsif ($$format eq "f") {
+    if ($$format eq "f") {
 	$out .= ".fasta";
     } elsif ($$format eq "C") {
 	$out .= ".csfasta";
@@ -364,37 +355,15 @@ sub get_nr_trimmed {
     (open(OUT, ">$out")) || return 0;
     my @fields = ();
     my $junk;
-    while(($seq) = each %temp_hash) {
-	if($$format eq "q") {
-	    @fields = split ("\n", ${$temp_hash{$seq}}[0]);
-	    print OUT "\@" , "$fields[0]\n$seq\n\+\n$fields[1]\n";
-	    ++$nr_out;
-
-	    if(exists(${$temp_hash{$seq}}[1])) {
-		$junk = shift @{$temp_hash{$seq}};
-		$$hash{$fields[0]} = $temp_hash{$seq};
-		
-		# test
-		#print STDERR "Encoded $fields[0] with @{$temp_hash{$seq}}\n";
-	    
-	   # } else { ## test
-		#print STDERR "Encoded $fields[0] as a singleton\n";
-	    }
-	    
-	} else {
-	    print OUT ">" , "${$temp_hash{$seq}}[0]\n$seq\n";
-	    ++$nr_out;
-	    if(exists(${$temp_hash{$seq}}[1])) {
-		$junk = shift @{$temp_hash{$seq}};
-		$$hash{$junk} = $temp_hash{$seq};
-		
-		# test
-		#print STDERR "Encoded $junk with @{$temp_hash{$seq}}\n";
-	    
-	    #} else { ## test
-		#print STDERR "Encoded ${$temp_hash{$seq}}[0] as a singleton\n";
-	    }
-	}
+    my $freq;
+    my $base = $$in;
+    $base =~ s/\.[^\/]+$//g; ## removes extension
+    $base =~ s/^.*\///g; ## removes any leading path information
+    
+    while(($seq,$freq) = each %temp_hash) {
+	++$nr_out;
+	print OUT ">$base", "_$nr_out", "_$freq\n";
+	print OUT "$seq\n";
     }
     close OUT;
     unless($$quiet) {
@@ -402,19 +371,13 @@ sub get_nr_trimmed {
     }
     %temp_hash = (); ## attempt to clear memory
     
-    # test
-    #exit;
-    
     return $out;
 }
 
 
 sub decider {
-    my($densities,$sam_gz,$quiet,$n_to_place,$base,$syn) = @_; ## passed by references .. hash and string and string and string and string and hash
+    my($densities,$sam_gz,$quiet,$n_to_place,$base) = @_; ## passed by references .. hash and string and string and string and string
     
-    # test
-    #print STDERR " in decider, n_to_place is $$n_to_place\n";
-    #exit;
     
     (open(SAM, "gzip -d -c $$sam_gz |")) || return 0;
     
@@ -428,10 +391,6 @@ sub decider {
     }
     my $out_base = "$$base" . "_placed_sorted" . "$suffix";
     
-    ## test
-    #print STDERR "decider received sam_gz $$sam_gz and base $$base\nout_base is $out_base\n";
-    #exit;
-    
     (open(BAM, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $out_base 2> /dev/null")) || return 0;
     
     # progress
@@ -440,8 +399,6 @@ sub decider {
     unless($$quiet) {
 	print STDERR "\tProgress \(dots indicate 1 percent complete\):\n\t";
     }
-    
-    
     
     # begin parsing
     my $last_read = "NULL";
@@ -466,7 +423,7 @@ sub decider {
 		
 		# process and output
 
-		$keep = get_keepers(\@scores,\@lines,\$r,\$p,\%$syn,\$last_read,\$xx);
+		$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx);
 		print BAM "$keep";
 		
 		# reset
@@ -474,23 +431,14 @@ sub decider {
 		@scores = ();
 		
 		# progress
-		
-		# test
-		my $check = int($xx / $one_percent);
-		#print STDERR "xx $xx dots_printed $dots_printed one_percent $one_percent check $check\n";
-		
+		my $check = int ($xx / $one_percent);
 		if($check > $dots_printed) {
 		    unless($$quiet) {
-			
-			# test
-			#print STDERR "\tFound as more than dots_printed\n";
-			
 			until ($check <= $dots_printed) {
 			    print STDERR ".";
 			    ++$dots_printed;
 			}
 		    }
-		    #$xx = 0;
 		}
 	    }
 	    $score = score_line(\$line,\%$densities);
@@ -503,7 +451,7 @@ sub decider {
     
     # process and output
     if($lines[0]) {
-	$keep = get_keepers(\@scores,\@lines,\$r,\$p,\%$syn,\$last_read);
+	$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read);
 	print BAM "$keep";
     }
     
@@ -548,7 +496,7 @@ sub score_line {
 }
 
 sub get_keepers {
-    my($scores,$lines,$r,$p,$syn,$read_name,$xx) = @_; ## passed by reference .. array, array, string, string, hash, string, string
+    my($scores,$lines,$r,$p,$read_name,$xx) = @_; ## passed by reference .. array, array, string, string, string, string
     my $best;
     my $best_score = 0;
     my $i = 0;
@@ -576,52 +524,45 @@ sub get_keepers {
     my $maybe_score;
     my $chance;
     
-    if(exists($$syn{$$read_name})) {
-	@synonyms = @{$$syn{$$read_name}};
+    # parse read_name
+    my $read_num;
+    my $readbase;
+    if($$read_name =~ /^(\S+)_(\d+)$/)  {
+	$read_num = $2;
+	$readbase = $1;
     }
     
     if($total == 0) {
 	# no guidance, randomly select
+	
 	++$$r;
 	++$$xx;
 	$best = int(rand(scalar(@$lines)));
 	$output = $$lines[$best];
 	$output =~ s/\n/\tXY:Z:R\n/g;
 	
-	# add synonyms, if needed
-	if($synonyms[0]) {
-	    foreach $syno (@synonyms) {
-		if($syno =~ /^(\S+)\n(\S+)$/) {
-		    ## fastq format .. need to swap out both read name and quality value
-		    $new_name = $1;
-		    $new_qual = $2;
-		    $best = int(rand(scalar(@$lines)));
-		    $swapee = $$lines[$best];
-		    $swapee =~ s/\n/\tXY:Z:R\n/g;
-		    @swapee_fields = split ("\t", $swapee);
-		    $swapee_fields[0] = $new_name;
-		    $swapee_fields[10] = $new_qual;
-		    $swapped = join("\t", @swapee_fields);
-		    $output .= $swapped;
-		    ++$$r;
-		    ++$$xx;
-		} else {
-		    ## not fastq format
-		    $best = int(rand(scalar(@$lines)));
-		    $swapee = $$lines[$best];
-		    $swapee =~ s/\n/\tXY:Z:R\n/g;
-		    @swapee_fields = split ("\t", $swapee);
-		    $swapee_fields[0] = $syno;
-		    $swapped = join("\t", @swapee_fields);
-		    $output .= $swapped;
-		    ++$$r;
-		    ++$$xx;
-		}
-	    }
+	# increment to account for the one already written
+	--$read_num;
+	
+	# add extra lines, if needed
+	for(my $j = $read_num; $j > 0; --$j) {
+	    ++$$r;
+	    ++$$xx;
+	    $best = int(rand(scalar(@$lines)));
+	    $swapee = $$lines[$best];
+	    $swapee =~ s/\n/\tXY:Z:R\n/g;
+	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
+	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+	    
+	    # test
+	    #print STDERR "\tAt j of $j next line set as: $swapee";
+	    
+	    $output .= $swapee;
 	}
 	return $output;
     } else {
 	# placement
+	
 	my @keys_perm = sort {$i_to_score{$b} <=> $i_to_score{$a}} keys %i_to_score;
 	my @keys = @keys_perm;
 	++$$p;
@@ -651,54 +592,43 @@ sub get_keepers {
 	$output = $$lines[$keep];
 	$output =~ s/\n/\tXY:Z:P\n/g;
 	
-	## add more lines for synonyms, if needed
-	if($synonyms[0]) {
-	    foreach $syno (@synonyms) {
-		if($syno =~ /^(\S+)\n(\S+)$/) {
-		    ## fastq
-		    $new_name = $1;
-		    $new_qual = $2;
-		} else {
-		    # not fastq
-		    $new_name = $syno;
-		}
-		
-		@keys = @keys_perm;
-		$total = $total_perm;
-		$keep = '';
-		$keep_ok = '';
 
-		until($keep_ok) {
-		    $maybe = shift @keys;
-		    $maybe_score = $i_to_score{$maybe};
-		    $chance = $maybe_score / $total;
-		    if($chance == 1) {
+	## add more lines, if needed
+	# increment to account for the one already written
+	--$read_num;
+	
+	# add extra lines, if needed
+	for(my $j = $read_num; $j > 0; --$j) {
+	    ++$$p;
+	    ++$$xx;
+	    @keys = @keys_perm;
+	    $keep = '';
+	    $keep_ok = '';
+	    $total = $total_perm;
+
+	    until($keep_ok) {
+		$maybe = shift @keys;
+		$maybe_score = $i_to_score{$maybe};
+		$chance = $maybe_score / $total;
+		if($chance == 1) {
+		    $keep = $maybe;
+		    $keep_ok = 1;
+		} else {
+		    $x = rand();
+		    if($x <= $chance) {
 			$keep = $maybe;
 			$keep_ok = 1;
-		    } else {
-			$x = rand();
-			if($x <= $chance) {
-			    $keep = $maybe;
-			    $keep_ok = 1;
-			}
 		    }
-		    $total -= $maybe_score;
 		}
-		$swapee = $$lines[$keep];
-		$swapee =~ s/\n/\tXY:Z:P\n/g;
-		@swapee_fields = split ("\t", $swapee);
-		$swapee_fields[0] = $new_name;
-		if($new_qual) {
-		    $swapee_fields[10] = $new_qual;
-		}
-		$swapped = join("\t", @swapee_fields);
-		$output .= $swapped;
-		++$$p;
-		++$$xx;
+		$total -= $maybe_score;
 	    }
+	    $swapee = $$lines[$keep];
+	    $swapee =~ s/\n/\tXY:Z:P\n/g;
+	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
+	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+	    $output .= $swapee;
 	}
 	return $output;
-	last;
     }
 }
 	
@@ -746,14 +676,14 @@ sub what_bins {
     
 
 sub call_bowtie {
-    my($genome,$orig_reads,$reads,$read_format,$quiet,$cores,$v,$syn) = @_; ## passed by reference ..all strings except last one is hash
+    my($genome,$orig_reads,$reads,$read_format,$quiet,$cores,$v) = @_; ## passed by reference ..all strings 
 
     my $bowtie_call;
     if($$read_format eq "C") {
 	my $c_genome_base = "$$genome" . ".cs";
 	$bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$reads";
     } else {
-	$bowtie_call = "bowtie \-$$read_format -v $$v --all --best --strata -p $$cores -S $$genome $$reads";
+	$bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
     }
     unless($$quiet) {
 	print STDERR "Calling bowtie with command:\n\t$bowtie_call ...\n";
@@ -797,6 +727,10 @@ sub call_bowtie {
     my $this_flag;
     my $aln_count = 0;
     my $string;
+    
+    my $count;
+    my $readbase;
+    
     while (<BOWTIE>) {
 	# headers go to every output stream
 	if($_ =~ /^@/) {
@@ -838,67 +772,67 @@ sub call_bowtie {
 		    print UNMAPPED "$string";
 		    
 		    # expand if necessary
-		    if(exists($$syn{$last_read})) {
-			my @sf = split ("\t", $string);
-			foreach my $entry (@{$$syn{$last_read}}) {
-			    if($$read_format eq "q") {
-				my @qf = split ("\n", $entry);
-				$sf[0] = $qf[0];
-				$sf[10] = $qf[1];
-			    } else {
-				$sf[0] = $entry;
-			    }
-			    my $out = join("\t",@sf);
-			    print UNMAPPED "$out";
-			    ++$unmap_n;
-			    
-			    # test
-			    #print STDERR "string:\n\t$string\nentry:\n\t$entry\nout:\n\t$out\n";
-			}
+		    if ($last_read =~ /^(\S+)_(\d+)$/) {
+			$readbase = $1;
+			$count = $2;
+		    } else {
+			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+		    }
+		    --$count;  ## increments for the one already written
+		    for(my $j = $count; $j > 0; --$j) {
+			$string =~ s/^[^\t]+\t//g;
+			$string = "$readbase" . "_" . "$j\t" . "$string";
+			print UNMAPPED "$string";
+			++$unmap_n;
 		    }
 		} elsif ($aln_count == 1) {
 		    print UNIQUE "$string";
 		    ++$unq_n;
 		    # expand if necessary
-		    if(exists($$syn{$last_read})) {
-			my @sf = split ("\t", $string);
-			foreach my $entry (@{$$syn{$last_read}}) {
-			    if($$read_format eq "q") {
-				my @qf = split ("\n", $entry);
-				$sf[0] = $qf[0];
-				$sf[10] = $qf[1];
-			    } else {
-				$sf[0] = $entry;
-			    }
-			    my $out = join("\t",@sf);
-			    print UNIQUE "$out";
-			    ++$unq_n;
-			    # test
-			    #print STDERR "string:\n\t$string\nentry:\n\t$entry\nout:\n\t$out\n";
-
-			}
+		    if ($last_read =~ /^(\S+)_(\d+)$/) {
+			$readbase = $1;
+			$count = $2;
+		    } else {
+			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+		    }
+		    --$count;  ## increments for the one already written
+		    for(my $j = $count; $j > 0; --$j) {
+			$string =~ s/^[^\t]+\t//g;
+			$string = "$readbase" . "_" . "$j\t" . "$string";
+			print UNIQUE "$string";
+			++$unq_n;
 		    }
 		} elsif ($aln_count == 2) {
 		    print TWO "$string";
-		    ++$two_n;
 		    # count the redundant reads
-		    if(exists($$syn{$last_read})) {
-			$two_n += scalar (@{$$syn{$last_read}});
+		    if ($last_read =~ /^(\S+)_(\d+)$/) {
+			$readbase = $1;
+			$count = $2;
+		    } else {
+			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 		    }
+		    $two_n += $count;
+		    
 		} elsif (($aln_count >= 3) and ($aln_count <= 5)) {
 		    print FIVE "$string";
-		    ++$five_n;
-		    # count the redundant reads
-		    if(exists($$syn{$last_read})) {
-			$five_n += scalar (@{$$syn{$last_read}});
+		    if ($last_read =~ /^(\S+)_(\d+)$/) {
+			$readbase = $1;
+			$count = $2;
+		    } else {
+			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 		    }
+		    $five_n += $count;
+
 		} elsif ($aln_count > 5) {
 		    print MMAP "$string";
-		    ++$mmap_n;
 		    # count the redundant reads
-		    if(exists($$syn{$last_read})) {
-			$mmap_n += scalar (@{$$syn{$last_read}});
+		    if ($last_read =~ /^(\S+)_(\d+)$/) {
+			$readbase = $1;
+			$count = $2;
+		    } else {
+			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 		    }
+		    $mmap_n += $count;
 		}
 		# clear
 		$string = '';
@@ -912,71 +846,71 @@ sub call_bowtie {
 	}
     }
     # Last read
-    process_string(\$string,\$aln_count);  ## adds XX:i
-    
+    process_string(\$string,\$aln_count);  ## adds XX:i to all, and XY:Z to unmapped and unique mapped
     if($aln_count == 0) {
 	++$unmap_n;
 	print UNMAPPED "$string";
+	
 	# expand if necessary
-	if(exists($$syn{$last_read})) {
-	    my @sf = split ("\t", $string);
-	    foreach my $entry (@{$$syn{$last_read}}) {
-		if($$read_format eq "q") {
-		    my @qf = split ("\n", $entry);
-		    $sf[0] = $qf[0];
-		    $sf[10] = $qf[1];
-		} else {
-		    $sf[0] = $entry;
-		}
-		my $out = join("\t",@sf);
-		print UNMAPPED "$out";
-		
-		# test
-		#print STDERR "string:\n\t$string\nentry:\n\t$entry\nout:\n\t$out\n";
-	    }
+	if ($last_read =~ /^(\S+)_(\d+)$/) {
+	    $readbase = $1;
+	    $count = $2;
+	} else {
+	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	}
+	--$count;  ## increments for the one already written
+	for(my $j = $count; $j > 0; --$j) {
+	    $string =~ s/$readbase\_$count\t/$readbase\_$j\t/g;
+	    print UNMAPPED "$string";
+	    ++$unmap_n;
 	}
     } elsif ($aln_count == 1) {
 	print UNIQUE "$string";
 	++$unq_n;
 	# expand if necessary
-	if(exists($$syn{$last_read})) {
-	    my @sf = split ("\t", $string);
-	    foreach my $entry (@{$$syn{$last_read}}) {
-		if($$read_format eq "q") {
-		    my @qf = split ("\n", $entry);
-		    $sf[0] = $qf[0];
-		    $sf[10] = $qf[1];
-		} else {
-		    $sf[0] = $entry;
-		}
-		my $out = join("\t",@sf);
-		print UNIQUE "$out";
-		
-		# test
-		#print STDERR "string:\n\t$string\nentry:\n\t$entry\nout:\n\t$out\n";
-	    }
+	if ($last_read =~ /^(\S+)_(\d+)$/) {
+	    $readbase = $1;
+	    $count = $2;
+	} else {
+	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	}
+	--$count;  ## increments for the one already written
+	for(my $j = $count; $j > 0; --$j) {
+	    $string =~ s/$readbase\_$count\t/$readbase\_$j\t/g;
+	    print UNIQUE "$string";
+	    ++$unq_n;
 	}
     } elsif ($aln_count == 2) {
 	print TWO "$string";
-	++$two_n;
 	# count the redundant reads
-	if(exists($$syn{$last_read})) {
-	    $two_n += scalar (@{$$syn{$last_read}});
+	if ($last_read =~ /^(\S+)_(\d+)$/) {
+	    $readbase = $1;
+	    $count = $2;
+	} else {
+	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 	}
+	$two_n += $count;
+	
     } elsif (($aln_count >= 3) and ($aln_count <= 5)) {
 	print FIVE "$string";
-	++$five_n;
-	# count the redundant reads
-	if(exists($$syn{$last_read})) {
-	    $five_n += scalar (@{$$syn{$last_read}});
+	if ($last_read =~ /^(\S+)_(\d+)$/) {
+	    $readbase = $1;
+	    $count = $2;
+	} else {
+	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 	}
+	$five_n += $count;
+	
     } elsif ($aln_count > 5) {
-	print MMAP "$string";		   
-	++$mmap_n;
+	print MMAP "$string";
 	# count the redundant reads
-	if(exists($$syn{$last_read})) {
-	    $mmap_n += scalar (@{$$syn{$last_read}});
+	if ($last_read =~ /^(\S+)_(\d+)$/) {
+	    $readbase = $1;
+	    $count = $2;
+	} else {
+	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
 	}
+	$mmap_n += $count;
     }
     
     close BOWTIE;
