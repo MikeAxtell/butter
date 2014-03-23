@@ -1,5 +1,9 @@
 SYNOPSIS
-    GRASS: Guided Repetitive Alignments for SmallRNA-Seq
+    butter: Bowtie UTilizing iTerative placEment of Repetitive small rnas
+
+    A wrapper for bowtie to produce small RNA-seq alignments where
+    multimapped small RNAs tend to be placed near regions of confidently
+    high density.
 
 LICENSE
     Copyright (C) 2014 Michael J. Axtell
@@ -32,11 +36,11 @@ DEPENDENCIES
     your PATH
 
 INSTALL
-    Install dependencies (see above), and then place the GRASS script in
+    Install dependencies (see above), and then place the butter script in
     your PATH
 
 USAGE
-    GRASS [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
+    butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 OPTIONS
     --version: print version and quit
@@ -66,22 +70,22 @@ INPUT FILES
     (beginning with a nucleotide, followed by a string of colors [0,1,2,3]
     or ambiguity codes [.]. If trimmed colorspace data are provided, it is
     assumed that the 'hybrid' color at the 3' end has been removed. If
-    colorspace data are trimmed by GRASS, the hybrid color at the 3' end
+    colorspace data are trimmed by butter, the hybrid color at the 3' end
     will be removed (see below).
 
   Reference genome
     File must be in FASTA format. Chromosome names will be truncated after
     the first white-space encountered.
 
-    GRASS will search for the expected bowtie indices in the same directory
-    as the genome file. If the input format is FASTQ or FASTA, GRASS will
+    butter will search for the expected bowtie indices in the same directory
+    as the genome file. If the input format is FASTQ or FASTA, butter will
     expect the bowtie indices to have the form [your_genome].[ebwt], where
     'your_genome' is the name of your genome file, and [ebwt] represents the
     six distinct file extensions for bowtie genome index files. If your
-    input data is colorspace, GRASS will expect the genome indices to have
+    input data is colorspace, butter will expect the genome indices to have
     the form [your_genome].cs.[ebwt] instead. The .cs serves as a reminder
     that the indices are built in colorspace. If the expected bowtie indices
-    are not found, GRASS will attempt to use bowtie-build under default
+    are not found, butter will attempt to use bowtie-build under default
     parameters to build them.
 
 METHODS

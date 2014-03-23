@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = 0.1;  ## March 20, 2014
+my $version_num = "0.1.1";  ## March 22, 2014
 my $help_message = get_help($version_num);
 
 my $version;
@@ -14,7 +14,7 @@ my $adapter;
 
 # for use at the end
 my $cl = join(" ", @ARGV);
-$cl = "GRASS " . "$cl";
+$cl = "butter " . "$cl";
 
 # If no arguments, quit with usage
 unless($ARGV[-1]) {
@@ -32,7 +32,7 @@ GetOptions ('version' => \$version,
 
 # If version, print version_num and quit
 if($version) {
-    print "GRASS version $version_num\n";
+    print "butter version $version_num\n";
     exit;
 }
 
@@ -104,7 +104,7 @@ if(-e $final_bam) {
 
 # Begin reporting to user
 unless($quiet) {
-    print STDERR "\nGRASS version $version_num\n";
+    print STDERR "\nbutter version $version_num\n";
     print STDERR `date`;
     print STDERR "Host: ";
     print STDERR `hostname`;
@@ -327,7 +327,7 @@ while (<INH>) {
     print OUTH "$_";
 }
 close INH;
-print OUTH "\@PG\tID:GRASS\tVN:$version_num\tCL:\"$cl\"\n";
+print OUTH "\@PG\tID:butter\tVN:$version_num\tCL:\"$cl\"\n";
 print OUTH "\@CO\tCustom tag XX:i: indicates number of valid placements for the read\n";
 print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped\n";
 print OUTH "\@CO\tOther custom tags from bowtie, see bowtie documentation\n";
@@ -1063,10 +1063,10 @@ sub check_install {
 sub get_help {
     my ($version_num) = @_;
     my $help = "
-GRASS: Guided Repetitive Alignments for SmallRNA-Seq 
+butter: Bowtie UTilizing iTerative placEment of Repetitive small rnas
 version $version_num
 
-USAGE: GRASS [options] [reads.fa\/.fasta\/.fq\/.fastq\/.csfasta] [genome.fa]
+USAGE: butter [options] [reads.fa\/.fasta\/.fq\/.fastq\/.csfasta] [genome.fa]
 
 DEPENDENCIES:
    samtools
@@ -1082,7 +1082,7 @@ OPTIONS:
    --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adpater trimming is enabled.
 
 DOCUMENTATION:
-   type \'perldoc GRASS\'
+   type \'perldoc butter\'
 
 ";
     return $help;
@@ -1326,7 +1326,9 @@ sub adapter2cs {
 
 =head1 SYNOPSIS
 
-GRASS: Guided Repetitive Alignments for SmallRNA-Seq
+butter: Bowtie UTilizing iTerative placEment of Repetitive small rnas
+
+A wrapper for bowtie to produce small RNA-seq alignments where multimapped small RNAs tend to be placed near regions of confidently high density.
 
 =head1 LICENSE
 
@@ -1364,11 +1366,11 @@ bowtie <http://bowtie-bio.sourceforge.net/index.shtml> .. installed to your PATH
 
 =head1 INSTALL
 
-Install dependencies (see above), and then place the GRASS script in your PATH
+Install dependencies (see above), and then place the butter script in your PATH
 
 =head1 USAGE
 
-GRASS [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
+butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 =head1 OPTIONS
 
@@ -1390,13 +1392,13 @@ GRASS [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 Files must be in FASTA, FASTQ, or colorspace-fasta format. File extensions must be used to indicate the format. .fasta and .fa are acceptable for FASTA files. .fastq and .fq are accetpable for colorspace files. .csfasta must be used for color-space files. There is no support for paired-end reads.
 
-Colorspace data is assumed to conform to colorspace-FASTA specifications (beginning with a nucleotide, followed by a string of colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are provided, it is assumed that the 'hybrid' color at the 3' end has been removed. If colorspace data are trimmed by GRASS, the hybrid color at the 3' end will be removed (see below).
+Colorspace data is assumed to conform to colorspace-FASTA specifications (beginning with a nucleotide, followed by a string of colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are provided, it is assumed that the 'hybrid' color at the 3' end has been removed. If colorspace data are trimmed by butter, the hybrid color at the 3' end will be removed (see below).
 
 =head2 Reference genome
 
 File must be in FASTA format. Chromosome names will be truncated after the first white-space encountered.
 
-GRASS will search for the expected bowtie indices in the same directory as the genome file. If the input format is FASTQ or FASTA, GRASS will expect the bowtie indices to have the form [your_genome].[ebwt], where 'your_genome' is the name of your genome file, and [ebwt] represents the six distinct file extensions for bowtie genome index files. If your input data is colorspace, GRASS will expect the genome indices to have the form [your_genome].cs.[ebwt] instead. The .cs serves as a reminder that the indices are built in colorspace.  If the expected bowtie indices are not found, GRASS will attempt to use bowtie-build under default parameters to build them.
+butter will search for the expected bowtie indices in the same directory as the genome file. If the input format is FASTQ or FASTA, butter will expect the bowtie indices to have the form [your_genome].[ebwt], where 'your_genome' is the name of your genome file, and [ebwt] represents the six distinct file extensions for bowtie genome index files. If your input data is colorspace, butter will expect the genome indices to have the form [your_genome].cs.[ebwt] instead. The .cs serves as a reminder that the indices are built in colorspace.  If the expected bowtie indices are not found, butter will attempt to use bowtie-build under default parameters to build them.
 
 =head1 METHODS
 
