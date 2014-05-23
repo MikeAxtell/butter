@@ -22,7 +22,7 @@ LICENSE
     with this program. If not, see <http://www.gnu.org/licenses/>.
 
 CITATION
-    None yet
+    None yet, stay tuned!
 
 AUTHOR
     Michael J. Axtell, Penn State University, mja18@psu.edu
@@ -48,6 +48,10 @@ OPTIONS
     --help: print usage and option information, then quit
 
     --quiet: suppress progress reports
+
+    --no_condense: do not condense trimmed reads into non-redundant
+    sequences for bowtie mapping. Preserves original read names, but is
+    (much) slower.
 
     --mismatches [integer]: Number of mismatches allowed for a valid
     alignment. Default 0. Must be either 0 or 1.
@@ -133,18 +137,22 @@ METHODS
     (arbitrarily ordered). The '12' indicates that there were 12 reads in
     the input file with this sequence.
 
+    The option --no_condense turns off read condensation, so the original
+    read names are preserved. This option is much slower.
+
   bowtie alignment
-    bowtie alignment utilizes the condensed reads. The settings force the
-    reporting of ALL valid alignments for each of the non-redundant queries
-    (e.g., each read from the condensed file). The resulting stream of
-    alignments is parsed into one of five output files: reads that mapped to
-    0 locations, 1 location, 2 locations, 3-5 locations, and >5 locations.
-    The placement of the 0-located and 1-located queries is final, so those
-    data are de-condensed (see below), and sorted to make bam files during
-    the alignment phase. For the 2, 3-5, and >5 placed reads, all possible
-    placements are stored in temporary .sam.gz files at the alignment stage
-    for later analysis. Note that these files could be huge for highly
-    repetitive genomes and/or large libraries.
+    bowtie alignment utilizes the condensed reads, unless option
+    --no_condense is active. The settings force the reporting of ALL valid
+    alignments for each of the non-redundant queries (e.g., each read from
+    the condensed file). The resulting stream of alignments is parsed into
+    one of five output files: reads that mapped to 0 locations, 1 location,
+    2 locations, 3-5 locations, and >5 locations. The placement of the
+    0-located and 1-located queries is final, so those data are de-condensed
+    (see below), and sorted to make bam files during the alignment phase.
+    For the 2, 3-5, and >5 placed reads, all possible placements are stored
+    in temporary .sam.gz files at the alignment stage for later analysis.
+    Note that these files could be huge for highly repetitive genomes and/or
+    large libraries.
 
   Placement
     First, the densities of the uniquely placed reads are tallied,
@@ -182,7 +190,8 @@ METHODS
     assessed using the process described above.
 
   De-condensation
-    While writing sorted BAM files, the non-redundant queries are
+    Unless run with option --no_condense, reads must be de-condensed. This
+    occurs while writing sorted BAM files, the non-redundant queries are
     de-condensed, such that there is an alignment line for each copy of that
     sequence present in the input data. For instance, with our example read
     from above (my_reads_758883_12), there were 12 copies. So, somewhere in

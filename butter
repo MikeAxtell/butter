@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.1.1";  ## March 22, 2014
+my $version_num = "0.1.2";  ## May 23, 2014
 my $help_message = get_help($version_num);
 
 my $version;
@@ -11,6 +11,7 @@ my $quiet;
 my $mismatches = 0;
 my $aln_cores = 1;
 my $adapter;
+my $no_condense;
 
 # for use at the end
 my $cl = join(" ", @ARGV);
@@ -28,7 +29,8 @@ GetOptions ('version' => \$version,
 	    'quiet' => \$quiet,
 	    'mismatches=i' => \$mismatches,
 	    'aln_cores=i' => \$aln_cores,
-	    'adapter=s' => \$adapter);
+	    'adapter=s' => \$adapter,
+            'no_condense' => \$no_condense);
 
 # If version, print version_num and quit
 if($version) {
@@ -118,6 +120,11 @@ unless($quiet) {
 	print STDERR "$adapter\n";
     } else {
 	print STDERR "None. Reads are assumed to be trimmed already.\n";
+    }
+    if($no_condense) {
+	print STDERR "Read condensation: OFF\n";
+    } else {
+	print STDERR "Read condensation: ON\n";
     }
     print STDERR "Max Mismatches: $mismatches\n";
     print STDERR "Processor cores for bowtie: $aln_cores\n";
@@ -227,9 +234,12 @@ unless (-r $trimmed) {
 # headers are re-named, arbitrarily to save memory
 
 unless($quiet) {
-    print STDERR "Compressing trimmed reads to a set of non-redundant queries ..";
+    unless($no_condense) {
+	print STDERR "Compressing trimmed reads to a set of non-redundant queries ..";
+    }
 }
-my $nr_trimmed_file = get_nr_trimmed(\$trimmed,\$read_format,\$quiet);
+
+my $nr_trimmed_file = get_nr_trimmed(\$trimmed,\$read_format,\$quiet,\$no_condense);
 
 
 # bowtie call
@@ -253,7 +263,12 @@ unless($quiet) {
     print STDERR "Done\n";
 }
 
-my $nr_base = $nr_trimmed_file;
+my $nr_base;
+if($no_condense) {
+    $nr_base = $reads;
+} else {
+    $nr_base = $nr_trimmed_file;
+}
 $nr_base =~ s/\.[^\/]+$//g;
 
 # Place the 2 -mapped reads
@@ -262,7 +277,7 @@ unless($quiet) {
     print STDERR "Deciding on reads with 2 possible placements\n";
 }
 
-my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n,\$base);
+my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n,\$base,\$no_condense);
 
 
 unless(-r $two_bam) {
@@ -352,72 +367,77 @@ exit;
 
 ######
 sub get_nr_trimmed {
-    my($in,$format,$quiet) = @_; ## by reference .. string, string, string
-    (open(IN, "$$in")) || return 0;
-    my $head;
-    my $seq;
-    my $plus;
-    my $qual;
-    my $val;
-    my $reads_in = 0;
-    my $nr_out = 0;
-    my %temp_hash = ();
-    while (<IN>) {
-	if($_ =~ /^\#/) {
-	    next;
-	}
-	if($$format eq "q") {
-	    $head = $_;
-	    $seq = <IN>;
-	    chomp $seq;
-	    $plus = <IN>;
-	    $qual = <IN>;
-	    ++$temp_hash{$seq};
-	    ++$reads_in;
-	} else {
-	    $head = $_;
-	    $seq = <IN>;
-	    chomp $seq;
-	    ++$temp_hash{$seq};
-	    ++$reads_in;
-	}
-    }
-    close IN;
-
-    my $out = $$in;
-    $out =~ s/\.[^\/]+$//g;  ## strip extension
-    $out .= "_condensed";
-    if ($$format eq "C") {
-	$out .= ".csfasta";
+    my($in,$format,$quiet,$no_condense) = @_; ## by reference .. string, string, string, string
+    if($$no_condense) {
+	my $no_file = "NULL";
+	return $no_file;
     } else {
-	$out .= ".fasta";
+	(open(IN, "$$in")) || return 0;
+	my $head;
+	my $seq;
+	my $plus;
+	my $qual;
+	my $val;
+	my $reads_in = 0;
+	my $nr_out = 0;
+	my %temp_hash = ();
+	while (<IN>) {
+	    if($_ =~ /^\#/) {
+		next;
+	    }
+	    if($$format eq "q") {
+		$head = $_;
+		$seq = <IN>;
+		chomp $seq;
+		$plus = <IN>;
+		$qual = <IN>;
+		++$temp_hash{$seq};
+		++$reads_in;
+	    } else {
+		$head = $_;
+		$seq = <IN>;
+		chomp $seq;
+		++$temp_hash{$seq};
+		++$reads_in;
+	    }
+	}
+	close IN;
+	
+	my $out = $$in;
+	$out =~ s/\.[^\/]+$//g;  ## strip extension
+	$out .= "_condensed";
+	if ($$format eq "C") {
+	    $out .= ".csfasta";
+	} else {
+	    $out .= ".fasta";
+	}
+	(open(OUT, ">$out")) || return 0;
+	my @fields = ();
+	my $junk;
+	my $freq;
+	my $base = $$in;
+	$base =~ s/\.[^\/]+$//g; ## removes extension
+	$base =~ s/^.*\///g; ## removes any leading path information
+	
+	while(($seq,$freq) = each %temp_hash) {
+	    ++$nr_out;
+	    print OUT ">$base", "_$nr_out", "_$freq\n";
+	    print OUT "$seq\n";
+	}
+	close OUT;
+	unless($$quiet) {
+	    print STDERR "\n\tReads in: $reads_in\n\tNon-redundant reads out: $nr_out\n";
+	    print STDERR "\tFile: $out\n";
+	}
+	%temp_hash = (); ## attempt to clear memory
+	
+	return $out;
     }
-    (open(OUT, ">$out")) || return 0;
-    my @fields = ();
-    my $junk;
-    my $freq;
-    my $base = $$in;
-    $base =~ s/\.[^\/]+$//g; ## removes extension
-    $base =~ s/^.*\///g; ## removes any leading path information
-    
-    while(($seq,$freq) = each %temp_hash) {
-	++$nr_out;
-	print OUT ">$base", "_$nr_out", "_$freq\n";
-	print OUT "$seq\n";
-    }
-    close OUT;
-    unless($$quiet) {
-	print STDERR "\n\tReads in: $reads_in\n\tNon-redundant reads out: $nr_out\n";
-	print STDERR "\tFile: $out\n";
-    }
-    %temp_hash = (); ## attempt to clear memory
-    
-    return $out;
 }
 
 
 sub decider {
-    my($densities,$sam_gz,$quiet,$n_to_place,$base) = @_; ## passed by references .. hash and string and string and string and string
+    my($densities,$sam_gz,$quiet,$n_to_place,$base,$no_condense) = @_; ## passed by references .. hash and string and string and string and string
     
     
     (open(SAM, "gzip -d -c $$sam_gz |")) || return 0;
@@ -464,7 +484,7 @@ sub decider {
 		
 		# process and output
 
-		$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx);
+		$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx,\$$no_condense);
 		print BAM "$keep";
 		
 		# reset
@@ -492,7 +512,7 @@ sub decider {
     
     # process and output
     if($lines[0]) {
-	$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read);
+	$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx,\$$no_condense);
 	print BAM "$keep";
     }
     
@@ -544,7 +564,7 @@ sub score_line {
 }
 
 sub get_keepers {
-    my($scores,$lines,$r,$p,$read_name,$xx) = @_; ## passed by reference .. array, array, string, string, string, string
+    my($scores,$lines,$r,$p,$read_name,$xx,$no_condense) = @_; ## passed by reference .. array, array, string, string, string, string, string
     my $best;
     my $best_score = 0;
     my $i = 0;
@@ -575,7 +595,10 @@ sub get_keepers {
     # parse read_name
     my $read_num;
     my $readbase;
-    if($$read_name =~ /^(\S+)_(\d+)$/)  {
+    if($$no_condense) {
+	$read_num = 1;
+	$readbase = $$read_name;
+    } elsif ($$read_name =~ /^(\S+)_(\d+)$/)  {
 	$read_num = $2;
 	$readbase = $1;
     }
@@ -593,6 +616,7 @@ sub get_keepers {
 	--$read_num;
 	
 	# add extra lines, if needed
+	# loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
 	for(my $j = $read_num; $j > 0; --$j) {
 	    ++$$r;
 	    ++$$xx;
@@ -646,6 +670,7 @@ sub get_keepers {
 	--$read_num;
 	
 	# add extra lines, if needed
+	# loop cannot be entered if no_condense is set, read_num will always be zero by this point
 	for(my $j = $read_num; $j > 0; --$j) {
 	    ++$$p;
 	    ++$$xx;
@@ -729,9 +754,19 @@ sub call_bowtie {
     my $bowtie_call;
     if($$read_format eq "C") {
 	my $c_genome_base = "$$genome" . ".cs";
-	$bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$reads";
+	if($$reads eq "NULL") {  
+	    ## in other words, no_condense, so use the original trimmed reads for alignment
+	    $bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$orig_reads";
+	} else { 
+	    $bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$reads";
+	}
     } else {
-	$bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
+	if($$reads eq "NULL") {
+	    ## no_condense is active
+	    $bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$orig_reads";
+	} else {
+	    $bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
+	}
     }
     unless($$quiet) {
 	print STDERR "Calling bowtie with command:\n\t$bowtie_call ...\n";
@@ -742,7 +777,12 @@ sub call_bowtie {
     my $mill = 0;
 
     # strip the extension
-    my $base = $$reads;
+    my $base;
+    if($$reads eq "NULL") {
+	$base = $$orig_reads;
+    } else {
+	$base = $$reads;
+    }
     $base =~ s/\.[^\/]+$//g;
     my $orig_base = $$orig_reads;
     $orig_base =~ s/\.[^\/]+$//g;
@@ -820,67 +860,81 @@ sub call_bowtie {
 		    print UNMAPPED "$string";
 		    
 		    # expand if necessary
-		    if ($last_read =~ /^(\S+)_(\d+)$/) {
-			$readbase = $1;
-			$count = $2;
-		    } else {
-			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-		    }
-		    --$count;  ## increments for the one already written
-		    for(my $j = $count; $j > 0; --$j) {
-			$string =~ s/^[^\t]+\t//g;
-			$string = "$readbase" . "_" . "$j\t" . "$string";
-			print UNMAPPED "$string";
-			++$unmap_n;
+		    unless($$reads eq "NULL") {
+			if ($last_read =~ /^(\S+)_(\d+)$/) {
+			    $readbase = $1;
+			    $count = $2;
+			} else {
+			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			}
+			--$count;  ## increments for the one already written
+			for(my $j = $count; $j > 0; --$j) {
+			    $string =~ s/^[^\t]+\t//g;
+			    $string = "$readbase" . "_" . "$j\t" . "$string";
+			    print UNMAPPED "$string";
+			    ++$unmap_n;
+			}
 		    }
 		} elsif ($aln_count == 1) {
 		    print UNIQUE "$string";
 		    ++$unq_n;
 		    # expand if necessary
-		    if ($last_read =~ /^(\S+)_(\d+)$/) {
-			$readbase = $1;
-			$count = $2;
-		    } else {
-			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-		    }
-		    --$count;  ## increments for the one already written
-		    for(my $j = $count; $j > 0; --$j) {
-			$string =~ s/^[^\t]+\t//g;
-			$string = "$readbase" . "_" . "$j\t" . "$string";
-			print UNIQUE "$string";
-			++$unq_n;
+		    unless($$reads eq "NULL") {
+			if ($last_read =~ /^(\S+)_(\d+)$/) {
+			    $readbase = $1;
+			    $count = $2;
+			} else {
+			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			}
+			--$count;  ## increments for the one already written
+			for(my $j = $count; $j > 0; --$j) {
+			    $string =~ s/^[^\t]+\t//g;
+			    $string = "$readbase" . "_" . "$j\t" . "$string";
+			    print UNIQUE "$string";
+			    ++$unq_n;
+			}
 		    }
 		} elsif ($aln_count == 2) {
 		    print TWO "$string";
 		    # count the redundant reads
-		    if ($last_read =~ /^(\S+)_(\d+)$/) {
-			$readbase = $1;
-			$count = $2;
+		    if($$reads eq "NULL") {
+			++$two_n;
 		    } else {
-			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			if ($last_read =~ /^(\S+)_(\d+)$/) {
+			    $readbase = $1;
+			    $count = $2;
+			} else {
+			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			}
+			$two_n += $count;
 		    }
-		    $two_n += $count;
-		    
 		} elsif (($aln_count >= 3) and ($aln_count <= 5)) {
 		    print FIVE "$string";
-		    if ($last_read =~ /^(\S+)_(\d+)$/) {
-			$readbase = $1;
-			$count = $2;
+		    if($$reads eq "NULL") {
+			++$five_n;
 		    } else {
-			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			if ($last_read =~ /^(\S+)_(\d+)$/) {
+			    $readbase = $1;
+			    $count = $2;
+			} else {
+			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			}
+			$five_n += $count;
 		    }
-		    $five_n += $count;
-
 		} elsif ($aln_count > 5) {
 		    print MMAP "$string";
 		    # count the redundant reads
-		    if ($last_read =~ /^(\S+)_(\d+)$/) {
-			$readbase = $1;
-			$count = $2;
+		    if($$reads eq "NULL") {
+			++$mmap_n;
 		    } else {
-			die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			if ($last_read =~ /^(\S+)_(\d+)$/) {
+			    $readbase = $1;
+			    $count = $2;
+			} else {
+			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			}
+			$mmap_n += $count;
 		    }
-		    $mmap_n += $count;
 		}
 		# clear
 		$string = '';
@@ -894,71 +948,105 @@ sub call_bowtie {
 	}
     }
     # Last read
+    # progress
+    ++$reads_done;
+    if($reads_done >= 100000) {
+	++$century;
+	$reads_done = 0;
+	unless($$quiet) {
+	    print STDERR ".";
+	}
+	if($century >= 10) {
+	    ++$mill;
+	    $century = 0;
+	    unless($$quiet) {
+		print STDERR " $mill million non-redundant reads aligned and counting\n";
+	    }
+	}
+    }
     process_string(\$string,\$aln_count);  ## adds XX:i to all, and XY:Z to unmapped and unique mapped
+    
+    
     if($aln_count == 0) {
 	++$unmap_n;
 	print UNMAPPED "$string";
 	
 	# expand if necessary
-	if ($last_read =~ /^(\S+)_(\d+)$/) {
-	    $readbase = $1;
-	    $count = $2;
-	} else {
-	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-	}
-	--$count;  ## increments for the one already written
-	for(my $j = $count; $j > 0; --$j) {
-	    $string =~ s/$readbase\_$count\t/$readbase\_$j\t/g;
-	    print UNMAPPED "$string";
-	    ++$unmap_n;
+	unless($$reads eq "NULL") {
+	    if ($last_read =~ /^(\S+)_(\d+)$/) {
+		$readbase = $1;
+		$count = $2;
+	    } else {
+		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    }
+	    --$count;  ## increments for the one already written
+	    for(my $j = $count; $j > 0; --$j) {
+		$string =~ s/^[^\t]+\t//g;
+		$string = "$readbase" . "_" . "$j\t" . "$string";
+		print UNMAPPED "$string";
+		++$unmap_n;
+	    }
 	}
     } elsif ($aln_count == 1) {
 	print UNIQUE "$string";
 	++$unq_n;
 	# expand if necessary
-	if ($last_read =~ /^(\S+)_(\d+)$/) {
-	    $readbase = $1;
-	    $count = $2;
-	} else {
-	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-	}
-	--$count;  ## increments for the one already written
-	for(my $j = $count; $j > 0; --$j) {
-	    $string =~ s/$readbase\_$count\t/$readbase\_$j\t/g;
-	    print UNIQUE "$string";
-	    ++$unq_n;
+	unless($$reads eq "NULL") {
+	    if ($last_read =~ /^(\S+)_(\d+)$/) {
+		$readbase = $1;
+		$count = $2;
+	    } else {
+		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    }
+	    --$count;  ## increments for the one already written
+	    for(my $j = $count; $j > 0; --$j) {
+		$string =~ s/^[^\t]+\t//g;
+		$string = "$readbase" . "_" . "$j\t" . "$string";
+		print UNIQUE "$string";
+		++$unq_n;
+	    }
 	}
     } elsif ($aln_count == 2) {
 	print TWO "$string";
 	# count the redundant reads
-	if ($last_read =~ /^(\S+)_(\d+)$/) {
-	    $readbase = $1;
-	    $count = $2;
+	if($$reads eq "NULL") {
+	    ++$two_n;
 	} else {
-	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    if ($last_read =~ /^(\S+)_(\d+)$/) {
+		$readbase = $1;
+		$count = $2;
+	    } else {
+		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    }
+	    $two_n += $count;
 	}
-	$two_n += $count;
-	
     } elsif (($aln_count >= 3) and ($aln_count <= 5)) {
 	print FIVE "$string";
-	if ($last_read =~ /^(\S+)_(\d+)$/) {
-	    $readbase = $1;
-	    $count = $2;
+	if($$reads eq "NULL") {
+	    ++$five_n;
 	} else {
-	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    if ($last_read =~ /^(\S+)_(\d+)$/) {
+		$readbase = $1;
+		$count = $2;
+	    } else {
+		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    }
+	    $five_n += $count;
 	}
-	$five_n += $count;
-	
     } elsif ($aln_count > 5) {
 	print MMAP "$string";
 	# count the redundant reads
-	if ($last_read =~ /^(\S+)_(\d+)$/) {
-	    $readbase = $1;
-	    $count = $2;
+	if($$reads eq "NULL") {
+	    ++$mmap_n;
 	} else {
-	    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    if ($last_read =~ /^(\S+)_(\d+)$/) {
+		$readbase = $1;
+		$count = $2;
+	    } else {
+		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	    }
+	    $mmap_n += $count;
 	}
-	$mmap_n += $count;
     }
     
     close BOWTIE;
@@ -1077,6 +1165,7 @@ OPTIONS:
    --version : print version and quit
    --help: print this message and quit
    --quiet: suppress progress and error reporting
+   --no_condense: Do not condense to a non-redundant set of sequences for bowtie. Preserves original read names, but is much slower.
    --mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
    --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-100.
    --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adpater trimming is enabled.
@@ -1350,7 +1439,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 =head1 CITATION
 
-None yet
+None yet, stay tuned!
 
 =head1 AUTHOR
 
@@ -1379,6 +1468,8 @@ butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 --help: print usage and option information, then quit
 
 --quiet: suppress progress reports
+
+--no_condense: do not condense trimmed reads into non-redundant sequences for bowtie mapping. Preserves original read names, but is (much) slower.
 
 --mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
 
@@ -1426,9 +1517,11 @@ The condensed read names follow a simple system. Consider an example read name:
 
 The '758883' indicates that this is unique sequence number 758883 (arbitrarily ordered). The '12' indicates that there were 12 reads in the input file with this sequence.
 
+The option --no_condense turns off read condensation, so the original read names are preserved. This option is much slower.
+
 =head2 bowtie alignment
 
-bowtie alignment utilizes the condensed reads. The settings force the reporting of ALL valid alignments for each of the non-redundant queries (e.g., each read from the condensed file). The resulting stream of alignments is parsed into one of five output files: reads that mapped to 0 locations, 1 location, 2 locations, 3-5 locations, and >5 locations. The placement of the 0-located and 1-located queries is final, so those data are de-condensed (see below), and sorted to make bam files during the alignment phase. For the 2, 3-5, and >5 placed reads, all possible placements are stored in temporary .sam.gz files at the alignment stage for later analysis. Note that these files could be huge for highly repetitive genomes and/or large libraries.
+bowtie alignment utilizes the condensed reads, unless option --no_condense is active. The settings force the reporting of ALL valid alignments for each of the non-redundant queries (e.g., each read from the condensed file). The resulting stream of alignments is parsed into one of five output files: reads that mapped to 0 locations, 1 location, 2 locations, 3-5 locations, and >5 locations. The placement of the 0-located and 1-located queries is final, so those data are de-condensed (see below), and sorted to make bam files during the alignment phase. For the 2, 3-5, and >5 placed reads, all possible placements are stored in temporary .sam.gz files at the alignment stage for later analysis. Note that these files could be huge for highly repetitive genomes and/or large libraries.
 
 =head2 Placement
 
@@ -1444,7 +1537,7 @@ De-condensation (see below) of multi-mapped reads happens during the placement p
 
 =head2 De-condensation
 
-While writing sorted BAM files, the non-redundant queries are de-condensed, such that there is an alignment line for each copy of that sequence present in the input data.  For instance, with our example read from above (my_reads_758883_12), there were 12 copies. So, somewhere in the output BAM file there will be twelve reads .. my_reads_758883_12, my_reads_758883_11, my_reads_758883_10 ... all the way down to my_reads_758883_1.
+Unless run with option --no_condense, reads must be de-condensed. This occurs while writing sorted BAM files, the non-redundant queries are de-condensed, such that there is an alignment line for each copy of that sequence present in the input data.  For instance, with our example read from above (my_reads_758883_12), there were 12 copies. So, somewhere in the output BAM file there will be twelve reads .. my_reads_758883_12, my_reads_758883_11, my_reads_758883_10 ... all the way down to my_reads_758883_1.
 
 Note that, for reads with more than 1 potential placement, each de-condensed read is considered separately. Because placement of multi-mapped reads can be either random or probabilistic (see above 'Placement'), this means that not all copies of an identical sequence will necessarily be placed at the same location.
 
