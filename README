@@ -59,6 +59,10 @@ OPTIONS
     --aln_cores [integer]: Number of processor cores to use during bowtie
     alignment phase. Default 1. Must be integer 1-00.
 
+    --max_rep [integer]: Maximum number of possible placements for a read.
+    Reads with a number of placements more than --max_rep will be reported
+    as unmapped. Default: 1000. Must be integer of at least 6.
+
     --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more
     ATGCatgc characters. If specified, 3' adapter trimming is enabled.
 
@@ -70,12 +74,12 @@ INPUT FILES
     files. .csfasta must be used for color-space files. There is no support
     for paired-end reads.
 
-    Colorspace data is assumed to conform to colorspace-FASTA specifications
-    (beginning with a nucleotide, followed by a string of colors [0,1,2,3]
-    or ambiguity codes [.]. If trimmed colorspace data are provided, it is
-    assumed that the 'hybrid' color at the 3' end has been removed. If
-    colorspace data are trimmed by butter, the hybrid color at the 3' end
-    will be removed (see below).
+    Colorspace data are assumed to conform to colorspace-FASTA
+    specifications (beginning with a nucleotide, followed by a string of
+    colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are
+    provided, it is assumed that the 'hybrid' color at the 3' end has been
+    removed. If colorspace data are trimmed by butter, the hybrid color at
+    the 3' end will be removed (see below).
 
   Reference genome
     File must be in FASTA format. Chromosome names will be truncated after
@@ -138,56 +142,52 @@ METHODS
     the input file with this sequence.
 
     The option --no_condense turns off read condensation, so the original
-    read names are preserved. This option is much slower.
+    read names are preserved. This option is much slower. If option
+    --no_condense is used for an input file in FASTQ format, a FASTA version
+    of the reads will be written to disk.
 
-  bowtie alignment
-    bowtie alignment utilizes the condensed reads, unless option
-    --no_condense is active. The settings force the reporting of ALL valid
-    alignments for each of the non-redundant queries (e.g., each read from
-    the condensed file). The resulting stream of alignments is parsed into
-    one of five output files: reads that mapped to 0 locations, 1 location,
-    2 locations, 3-5 locations, and >5 locations. The placement of the
-    0-located and 1-located queries is final, so those data are de-condensed
-    (see below), and sorted to make bam files during the alignment phase.
-    For the 2, 3-5, and >5 placed reads, all possible placements are stored
-    in temporary .sam.gz files at the alignment stage for later analysis.
-    Note that these files could be huge for highly repetitive genomes and/or
-    large libraries.
+  Alignments and placements
+    Four iterations of bowtie are called successively on the reads after
+    adapter trimming (if applicable) and condensation (if applicable) and
+    conversion from FASTQ to FASTA format (if applicable, see above).
 
-  Placement
-    First, the densities of the uniquely placed reads are tallied,
+    The first iteration uses bowtie setting -m 1 to limit alignments to
+    reads with only one unique possible position in the reference genome.
+    This output stream is parsed to retain unmapped reads, and reads with
+    unique alignments. Using bowtie's --max option, reads with more than 1
+    possible alignment are written to a temporary FASTA or csFASTA file.
+
+    After this, the densities of the uniquely placed reads are tallied,
     genome-wide, using a sliding window of 250 nts, and a step size of 50
     nts. The density in each window is simply the sum of all of the
     read-depths at each nt in the window (e.g., 'area under curve').
 
-    After calculating the densities, both possible placements for each read
-    that had 2 possible locations are analyzed. Each location falls into 5
-    different windows .. the window with the maximum score is taken as the
-    existing density of each placement. In cases where all possible
-    placements have an exisiting density of zero, the choice of which
-    placement to retain is simply random. If one possible placement has
-    existing density and the other doesn't, the retained placement will be
-    that which is next to existing density. If both possible placements have
-    existing density, the retained placement will be selected based on
-    probabilities dictated by the relative density abundances among the two
-    choices. For example, if placement one had a maximum density score of
-    70, and and placement two had a maximum density score of 30, the
-    probability of placement one being retained is 70 / (70 + 30) [e.g. 70%]
-    and the probability of placement two being retained is 30 / (70 + 30)
-    [e.g. 30%].
+    The second bowtie iteration uses the multi-mapped reads set aside in the
+    first iteration for a run with bowtie -m set to 2. Thus, only reads with
+    2 possible placements are output. After calculating the densities, both
+    possible placements for each read that had 2 possible locations are
+    analyzed. Each location falls into 5 different windows .. the window
+    with the maximum score is taken as the existing density of each
+    placement. In cases where all possible placements have an exisiting
+    density of zero, the choice of which placement to retain is simply
+    random. If one possible placement has existing density and the other
+    doesn't, the retained placement will be that which is next to existing
+    density. If both possible placements have existing density, the retained
+    placement will be selected based on probabilities dictated by the
+    relative density abundances among the two choices. For example, if
+    placement one had a maximum density score of 70, and and placement two
+    had a maximum density score of 30, the probability of placement one
+    being retained is 70 / (70 + 30) [e.g. 70%] and the probability of
+    placement two being retained is 30 / (70 + 30) [e.g. 30%]. As in the
+    first iteration, reads with multi-mappings higher than the -m set point
+    are written to a temporary FASTA or csFASTA file for analysis in the
+    next iteration.
 
-    After the reads with 2 possible reads are processed, they are sorted and
-    written to a bam file, and the sam.gz file is deleted. The genome-wide
-    densities are then updated using the new information gleaned from
-    placing the 2-mapped reads.
-
-    The process is the iterated two more times .. first for the reads with
-    3-5 possible placements, and finally for the reads with >5 possible
-    placements.
-
-    De-condensation (see below) of multi-mapped reads happens during the
-    placement process as well. Each de-condensed read is individually
-    assessed using the process described above.
+    After the process is repeated for two more iterations .. the densities
+    are updated with the new data, and multi-mapped reads that remain are
+    re-mapped iteratively. Iteration three captures reads with 3-5 possible
+    placements, and iteration four captures reads with between 5 and
+    --max_rep number of placements (default is 1000).
 
   De-condensation
     Unless run with option --no_condense, reads must be de-condensed. This
@@ -207,6 +207,31 @@ METHODS
 
   Merging
     After all iterations of placements and density calculations have
-    completed, the resulting 5 sorted bam files are merged to a single final
+    completed, the resulting sorted bam files are merged to a single final
     bam alignment, and the intermediate bam files deleted.
+
+  Temporary files
+    butter writes a number of temporary files to disk during a run ..
+    intermediate BAM files, and temporary FASTA (or csFASTA) files. These
+    will all be deleted at the completetion of the run.
+
+OUTPUT
+    The output is a single BAM alignment file sorted by chromosomal
+    position. The BAM header includes lines describing the run. butter adds
+    two optional tags for each alignment. All reads are in the alignment
+    file, including reads that were unmapped (unmapped reads have bit 0x4
+    set in the SAM FLAG field, per SAM specification). Reads that were
+    unmapped because they had zero possible alignments with the reference
+    have optional tag XM:i set to 0, while reads that were unmapped becuase
+    they had more than --max_rep possible placements have XM:i set to a high
+    number (equal to whatever setting of --max_rep was used in the run). The
+    XM:i custom tag comes from bowtie (see bowtie documentation).
+
+    Custom tag XX:i: indicates number of valid placements for the read (of
+    which only one is being shown)
+
+    Custom tag XY:Z: indicates how the reported placement was selected. U:
+    uniquely mapped, P: multi-mapped and placed due to clustering, R:
+    multi-mapped and randomly placed, N: unmapped, M: Multi-mappings
+    exceeded setting --max_rep, so no placement performed.
 

@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.1.2";  ## May 23, 2014
+my $version_num = "0.2.0"; 
 my $help_message = get_help($version_num);
 
 my $version;
@@ -10,6 +10,7 @@ my $help;
 my $quiet;
 my $mismatches = 0;
 my $aln_cores = 1;
+my $max_rep = 1000;
 my $adapter;
 my $no_condense;
 
@@ -29,6 +30,7 @@ GetOptions ('version' => \$version,
 	    'quiet' => \$quiet,
 	    'mismatches=i' => \$mismatches,
 	    'aln_cores=i' => \$aln_cores,
+	    'max_rep=i' => \$max_rep,
 	    'adapter=s' => \$adapter,
             'no_condense' => \$no_condense);
 
@@ -68,6 +70,12 @@ unless(($mismatches =~ /^\d+$/) and ($mismatches >= 0) and ($mismatches <= 1)) {
 # aln_cores must be an integer between 1 and 100
 unless(($aln_cores =~ /^\d+$/) and ($aln_cores >= 1) and ($aln_cores <= 100)) {
     print "FATAL: option --aln_cores must be an integer between 1 and 100\n$help_message\n";
+    exit;
+}
+
+# max_rep must be an integer of at least 6
+unless(($max_rep =~ /^\d+$/) and ($max_rep >= 6)) {
+    print "FATAL: option --max_rep must be an integer of at least 6.\n$help_message\n";
     exit;
 }
 
@@ -127,8 +135,9 @@ unless($quiet) {
 	print STDERR "Read condensation: ON\n";
     }
     print STDERR "Max Mismatches: $mismatches\n";
+    print STDERR "Max number of possible placments: $max_rep\n";
     print STDERR "Processor cores for bowtie: $aln_cores\n";
-    print STDERR "\nChecking dependencies\n";
+    print STDERR "Checking dependencies\n";
 }
 
 # Dependency checks
@@ -239,14 +248,20 @@ unless($quiet) {
     }
 }
 
-my $nr_trimmed_file = get_nr_trimmed(\$trimmed,\$read_format,\$quiet,\$no_condense);
+my ($nr_trimmed_file,$read_count,$query_count) = get_nr_trimmed(\$trimmed,\$read_format,\$quiet,\$no_condense);
+if(($read_format eq "q") and ($$no_condense)) {
+    # in this case, we have written a FASTA version of the file, but not condensed it.
+    $trimmed = $nr_trimmed_file;
+    $nr_trimmed_file = "NULL";
+}
 
+my $read_count_all = $read_count;
 
 # bowtie call
-my ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n) = call_bowtie(\$genome,\$trimmed,\$nr_trimmed_file,\$read_format,\$quiet,\$aln_cores,\$mismatches);
-unless(($unmap_n) or ($unq_n) or ($two_n) or ($five_n) or ($mmap_n)) {
-    die "FATAL: falled to complete call_bowtie sub-routine\n";
+unless($quiet) {
+    print STDERR "Bowtie iteration one: $query_count queries representing $read_count reads\n";
 }
+my ($unmap_n,$unq_n,$mmap1_fasta_file) = call_bowtie_initial(\$genome,\$trimmed,\$nr_trimmed_file,\$read_format,\$quiet,\$aln_cores,\$mismatches,\$read_count,\$query_count);
 
 # Get bin densities from the _unique_sorted.bam file
 my %bin_dens = ();
@@ -272,17 +287,27 @@ if($no_condense) {
 $nr_base =~ s/\.[^\/]+$//g;
 
 # Place the 2 -mapped reads
-my $two_sam_gz = "$nr_base" . "_2.sam.gz";
+
 unless($quiet) {
-    print STDERR "Deciding on reads with 2 possible placements\n";
+    print STDERR "Bowtie iteration two: $query_count queries representing $read_count reads\n";
 }
+my $max = 2;
+my $r = 0;
+my $p = 0;
+my $m = 0;
 
-my $two_bam = decider(\%bin_dens,\$two_sam_gz,\$quiet,\$two_n,\$base,\$no_condense);
+my($two_bam,$two_m_bam,$mmap2_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap1_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
 
+$m = 0;
 
 unless(-r $two_bam) {
     die "FATAL: unknown failure .. expected file $two_bam not found\n";
 }
+unless(-r $mmap2_fasta_file) {
+    die "FATAL: unknown failure .. expected file $mmap2_fasta_file not found\n";
+}
+
+system "rm -f $two_m_bam";
 
 # Update bin densities
 unless($quiet) {
@@ -295,15 +320,22 @@ unless($quiet) {
 }
 
 # Place the 3-5 mapped reads
-my $five_sam_gz = "$nr_base" . "_5.sam.gz";
 unless($quiet) {
-    print STDERR "Deciding on reads with 3-5 possible placements\n";
+    print STDERR "Bowtie iteration three: $query_count queries representing $read_count reads\n";
 }
-my $five_bam = decider(\%bin_dens,\$five_sam_gz,\$quiet,\$five_n,\$base);
+$max = 5;
+my($five_bam,$five_m_bam,$mmap5_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap2_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
+
+$m = 0;
 
 unless(-r $five_bam) {
     die "FATAL: unknown failure .. expected file $five_bam not found\n";
 }
+unless(-r $mmap5_fasta_file) {
+    die "FATAL: unknown failure .. expected file $mmap5_fasta_file not found\n";
+}
+
+system "rm -f $five_m_bam";
 
 # Update bin densities
 unless($quiet) {
@@ -316,15 +348,24 @@ unless($quiet) {
 }
 
 # Place the >5 mapped reads
-my $mm_sam_gz = "$nr_base" . "_mmapped.sam.gz";
 unless($quiet) {
-    print STDERR "Deciding on reads with >5 possible placements\n";
+    print STDERR "Bowtie iteration four: $query_count queries representing $read_count reads\n";
 }
-my $mm_bam = decider(\%bin_dens,\$mm_sam_gz,\$quiet,\$mmap_n,\$base);
 
-unless(-r $mm_bam) {
-    die "FATAL: unknown failure .. expected file $mm_bam not found\n";
+# 
+
+$max = $max_rep;
+my($max_bam,$real_m_bam,$mmapmax_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap5_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
+
+
+unless(-r $max_bam) {
+    die "FATAL: unknown failure .. expected file $max_bam not found\n";
 }
+unless(-r $real_m_bam) {
+    die "FATAL: unknown failure .. expected file $real_m_bam not found\n";
+}
+
+system "rm -f $mmap1_fasta_file $mmap2_fasta_file $mmap5_fasta_file $mmapmax_fasta_file";
 
 # Now, merge 
 unless($quiet) {
@@ -344,22 +385,51 @@ while (<INH>) {
 close INH;
 print OUTH "\@PG\tID:butter\tVN:$version_num\tCL:\"$cl\"\n";
 print OUTH "\@CO\tCustom tag XX:i: indicates number of valid placements for the read\n";
-print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped\n";
+print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed\n";
 print OUTH "\@CO\tOther custom tags from bowtie, see bowtie documentation\n";
 close OUTH;
 
 
-system "samtools merge -h $final_header_file $final_bam $unq_sort_bam $two_bam $five_bam $mm_bam $unmapped_sort_bam";
+system "samtools merge -h $final_header_file $final_bam $unq_sort_bam $two_bam $five_bam $max_bam $unmapped_sort_bam $real_m_bam";
 unless($quiet) {
     print STDERR " Done\n";
 }
 
 # clean up
-system "rm -f $unq_sort_bam $two_bam $five_bam $mm_bam $unmapped_sort_bam $final_header_file";
+
+system "rm -f $unq_sort_bam $two_bam $five_bam $max_bam $unmapped_sort_bam $final_header_file $real_m_bam";
+
+# report
+unless($quiet) {
+    print STDERR "Summary of alignment file $final_bam",":\n";
+    my $unmap_per = sprintf("%.1f", (100*($unmap_n / $read_count_all)));
+    my $m_per = sprintf("%.1f", (100*($m / $read_count_all)));
+    my $unplaced_sum = $unmap_n + $m;
+    my $unplaced_per = sprintf("%.1f", (100*($unplaced_sum / $read_count_all)));
+    my $unq_per = sprintf("%.1f", (100*($unq_n / $read_count_all)));
+    my $r_per = sprintf("%.1f", (100*($r / $read_count_all)));
+    my $p_per = sprintf("%.1f", (100*($p / $read_count_all)));
+    my $rp_sum = $r + $p;
+    my $rp_per = sprintf("%.1f", (100*($rp_sum / $read_count_all)));
+    print STDERR "Unampped reads: ";
+    print STDERR "$unplaced_sum \/ $read_count_all \($unplaced_per\%\)\n";
+    print STDERR "  Unmapped because 0 possible positions: ";
+    print STDERR "$unmap_n \/ $read_count_all \($unmap_per\%\)\n";
+    print STDERR "  Unmapped because more than $max_rep possible positions: ";
+    print STDERR "$m \/ $read_count_all \($m_per\%\)\n";
+    print STDERR "Uniquely mapped reads: ";
+    print STDERR "$unq_n \/ $read_count_all \($unq_per\%\)\n";
+    print STDERR "Multi-mapped reads: ";
+    print STDERR "$rp_sum \/ $read_count_all \($rp_per\%\)\n";
+    print STDERR "  Multi-mapped reads where placement was random:  ";
+    print STDERR "$r \/ $read_count_all \($r_per\%\)\n";
+    print STDERR "  Multi-mapped reads where placement was based on density: ";
+    print STDERR "$p \/ $read_count_all \($p_per\%\)\n";
+}
 
 # goodbye!
 unless($quiet) {
-    print STDERR "\nCompleted at ";
+    print STDERR "Completed at ";
     print STDERR `date`;
 }
 exit;
@@ -368,11 +438,53 @@ exit;
 ######
 sub get_nr_trimmed {
     my($in,$format,$quiet,$no_condense) = @_; ## by reference .. string, string, string, string
+    my $read_count = 0;
+    my $query_count = 0;
+    (open(IN, "$$in")) || return 0;
     if($$no_condense) {
-	my $no_file = "NULL";
-	return $no_file;
+	# if this is a FASTQ file, will need to re-write as a FASTA file!
+	if($format eq "q") {
+	    my $q2fa = $$in;
+	    $q2fa =~ s/\.[^\/]+$/\.fasta/g;
+	    (open(OUT, ">$q2fa")) || return 0;
+	    my $head1;
+	    my $seq1;
+	    my $plus1;
+	    my $qual1;
+	    while (<IN>) {
+		$head1 = $_;
+		$head1 =~ s/^\@/>/;
+		$seq1 = <IN>;
+		$plus1 = <IN>;
+		$qual1 = <IN>;
+		++$read_count;
+		++$query_count;
+		print OUT "$head1","$seq1";
+	    }
+	    close IN;
+	    close OUT;
+	    unless($$quiet) {
+		print STDERR "\nFASTQ-formatted reads written in FASTA format to file $q2fa\n";
+	    }
+	    return ($q2fa,$read_count,$query_count);
+	} else {
+	    # If a fasta or csfasta input file, and no_condense is set, no modifications required
+	    # but ya do need to count the queries
+	    while (<IN>) {
+		chomp;
+		if($_ =~ /^>/) {
+		    ++$read_count;
+		    ++$query_count;
+		}
+	    }
+	    close IN;
+	    my $no_file = "NULL";
+	    unless($$quiet) {
+		print STDERR "\nTotal reads: $read_count\n";
+	    }
+	    return ($no_file,$read_count,$query_count);
+	}
     } else {
-	(open(IN, "$$in")) || return 0;
 	my $head;
 	my $seq;
 	my $plus;
@@ -431,35 +543,48 @@ sub get_nr_trimmed {
 	}
 	%temp_hash = (); ## attempt to clear memory
 	
-	return $out;
+	return ($out,$reads_in,$nr_out);
     }
 }
 
 
-sub decider {
-    my($densities,$sam_gz,$quiet,$n_to_place,$base,$no_condense) = @_; ## passed by references .. hash and string and string and string and string
+sub call_bowtie_iterative {
+    my($genome,$base,$quiet,$no_condense,$max,$aln_cores,$mismatches,$bin_dens,$fasta_file,$read_format,$read_count,$query_count,$r,$p,$m) = @_; ## passed by references .. all strings except the hash bin_dens
     
-    
-    (open(SAM, "gzip -d -c $$sam_gz |")) || return 0;
-    
-    my $r = 0;  ## unguided, random placements
-    my $p = 0;  ## placed reads
-    
-    # open output stream
-    my $suffix;
-    if($$sam_gz =~ /(_[^_]+)\.sam.gz/) {
-	$suffix = $1;
+    # prepare the bowtie call
+    my $bowtie_call;
+    my $mmap_fasta_file;
+    if($$read_format eq "C") {
+	my $c_genome_base = "$$genome" . ".cs";
+	$mmap_fasta_file = "mmap" . "$$max" . ".csfasta";
+	$bowtie_call = "bowtie -f -C -v $$mismatches --best --strata --all -m $$max --max $mmap_fasta_file --col-keepends -p $$aln_cores -S $c_genome_base $$fasta_file";
+    } else {
+	$mmap_fasta_file = "mmap" . "$$max" . ".fasta";
+	$bowtie_call = "bowtie -f -v $$mismatches --best --strata --all -m $$max --max $mmap_fasta_file -p $$aln_cores -S $$genome $$fasta_file";
     }
-    my $out_base = "$$base" . "_placed_sorted" . "$suffix";
-    
-    (open(BAM, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $out_base 2> /dev/null")) || return 0;
-    
-    # progress
-    my $one_percent = int (0.01 * $$n_to_place);
-    my $xx = 0;
     unless($$quiet) {
-	print STDERR "\tProgress \(dots indicate 1 percent complete\):\n\t";
+	print STDERR "\tCalling bowtie with command:\n\t$bowtie_call\n";
+	print STDERR "\tProgress \(dots indicate 1 percent of queries\):\n\t";
     }
+    
+    # progress counter
+    my $queries_done = 0;
+    my $queries_rp = 0;
+    my $queries_m = 0;
+    my $dots_printed = 0;
+    my $dots_should_be_printed = 0;
+    my $r_at_start = $$r;
+    my $p_at_start = $$p;
+    my $m_at_start = $$m;
+    
+    # open output streams
+    my $out_base = "$$base" . "$$max" . "_placed_sorted";
+    my $m_out_base = "$$base" . "_exceeds$$max";
+    (open(BAM, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $out_base 2> /dev/null")) || return 0;
+    (open(MBAM, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $m_out_base 2> /dev/null")) || return 0;
+
+    # open bowtie process
+    (open(BOWTIE, "$bowtie_call 2> /dev/null |")) || return 0;
     
     # begin parsing
     my $last_read = "NULL";
@@ -470,12 +595,11 @@ sub decider {
     my $score;
     my $line;
 
-    my $dots_printed = 0;
-    
-    while (<SAM>) {
+    while (<BOWTIE>) {
 	if($_ =~ /^\@/) {
-	    # header
+	    # header goes to both files
 	    print BAM "$_";
+	    print MBAM "$_";
 	} else {
 	    @fields = split ("\t", $_);
 	    $line = $_;
@@ -484,59 +608,64 @@ sub decider {
 		
 		# process and output
 
-		$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx,\$$no_condense);
-		print BAM "$keep";
+		$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense);
+		if($keep =~ /\tXY:Z:M/) {
+		    print MBAM "$keep";
+		    ++$queries_m;
+		} else {
+		    print BAM "$keep";
+		    ++$queries_rp;
+		}
 		
 		# reset
 		@lines = ();
 		@scores = ();
 		
 		# progress
-		my $check = int ($xx / $one_percent);
-		if($check > $dots_printed) {
-		    unless($$quiet) {
-			until ($check <= $dots_printed) {
-			    print STDERR ".";
-			    ++$dots_printed;
-			}
+		++$queries_done;
+		unless($$quiet) {
+		    $dots_should_be_printed = int (100 * ($queries_done / $$query_count));
+		    until ($dots_printed >= $dots_should_be_printed) {
+			print STDERR ".";
+			++$dots_printed;
 		    }
 		}
 	    }
-	    $score = score_line(\$line,\%$densities);
+	    $score = score_line(\$line,\%$bin_dens);
 	    push(@scores,$score);
 	    push(@lines,$_);
 	    $last_read = $fields[0];
 	}
     }
-    close SAM;
+    close BOWTIE;
     
     # process and output
     if($lines[0]) {
-	$keep = get_keepers(\@scores,\@lines,\$r,\$p,\$last_read,\$xx,\$$no_condense);
-	print BAM "$keep";
+	$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense);
+	if($keep =~ /\tXY:Z:M/) {
+	    print MBAM "$keep";
+	    ++$queries_m;
+	} else {
+	    print BAM "$keep";
+	    ++$queries_rp;
+	}
     }
     
     close BAM;
+    close MBAM;
     
     unless($$quiet) {
-	my $all = $r + $p;
-	my $per_r;
-	my $per_p;
-	if($all == 0) {
-	    $per_r = 0;
-	    $per_p = 0;
-	} else {
-	    $per_r = sprintf("%.1f",(100*($r / $all)));
-	    $per_p = sprintf("%.1f",(100*($p / $all)));
-	}
 	print STDERR " Done\n";
-	print STDERR "\tReads placed based on density: $p \/ $all \($per_p\%\)\n";
-	print STDERR "\tReads randomly placed: $r \/ $all \($per_r\%\)\n";
     }
-    system "rm -f $$sam_gz";
-
+    
+    # update
+    $$read_count -= ($$r - $r_at_start);
+    $$read_count -= ($$p - $p_at_start);
+    $$query_count -= $queries_rp;
+    
     my $bam = "$out_base" . ".bam";
-    return $bam;
+    my $mbam = "$m_out_base" . ".bam";
+    return ($bam,$mbam,$mmap_fasta_file);
 }
 
 sub score_line {
@@ -564,7 +693,7 @@ sub score_line {
 }
 
 sub get_keepers {
-    my($scores,$lines,$r,$p,$read_name,$xx,$no_condense) = @_; ## passed by reference .. array, array, string, string, string, string, string
+    my($scores,$lines,$r,$p,$m,$read_name,$no_condense) = @_; ## passed by reference .. array, array, rest strings
     my $best;
     my $best_score = 0;
     my $i = 0;
@@ -572,6 +701,48 @@ sub get_keepers {
     my %i_to_score = ();
     my $total = 0;
     my $score;
+
+    # parse read_name
+    my $read_num;
+    my $readbase;
+    if($$no_condense) {
+	$read_num = 1;
+	$readbase = $$read_name;
+    } elsif ($$read_name =~ /^(\S+)_(\d+)$/)  {
+	$read_num = $2;
+	$readbase = $1;
+    }
+
+    my $swapee;
+
+    # First check if it is a -m violator ... it would be a single line, containing XM:i:[int] where [int] is a non-zero integer,
+    if((scalar @$lines) == 1) {
+	if($$lines[0] =~ /\tXM:i:(\d+)/) {
+	    if($1 > 0) {
+		++$$m;
+		# Set XX:i to 0, and XY:Z to M
+		$output = $$lines[0];
+		$output =~ s/\n/\tXX:i:0\tXY:Z:M\n/g;
+		
+		# increment to account for the one already written
+		--$read_num;
+		
+		# add extra lines, if needed
+		# loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
+		for(my $j = $read_num; $j > 0; --$j) {
+		    ++$$m;
+		    $swapee = $$lines[0];
+		    $swapee =~ s/\n/\tXX:i:0\tXY:Z:M\n/g;
+		    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
+		    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+		    $output .= $swapee;
+		}
+		return $output;
+	    } else {
+		die "FATAL: in sub-routine get_keepers: received a line with XM:i: call of $1 ... \n";
+	    }
+	}
+    }
 
     # hash them and count them
     foreach $score (@$scores) {
@@ -584,7 +755,7 @@ sub get_keepers {
     my $syno;
     my $new_name;
     my $new_qual;
-    my $swapee;
+
     my @swapee_fields = ();
     my $swapped;
     
@@ -592,25 +763,16 @@ sub get_keepers {
     my $maybe_score;
     my $chance;
     
-    # parse read_name
-    my $read_num;
-    my $readbase;
-    if($$no_condense) {
-	$read_num = 1;
-	$readbase = $$read_name;
-    } elsif ($$read_name =~ /^(\S+)_(\d+)$/)  {
-	$read_num = $2;
-	$readbase = $1;
-    }
+    
+    my $xx_i = scalar(@$lines);
     
     if($total == 0) {
 	# no guidance, randomly select
 	
 	++$$r;
-	++$$xx;
 	$best = int(rand(scalar(@$lines)));
 	$output = $$lines[$best];
-	$output =~ s/\n/\tXY:Z:R\n/g;
+	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\n/g;
 	
 	# increment to account for the one already written
 	--$read_num;
@@ -619,10 +781,9 @@ sub get_keepers {
 	# loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
 	for(my $j = $read_num; $j > 0; --$j) {
 	    ++$$r;
-	    ++$$xx;
 	    $best = int(rand(scalar(@$lines)));
 	    $swapee = $$lines[$best];
-	    $swapee =~ s/\n/\tXY:Z:R\n/g;
+	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\n/g;
 	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
 	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
 	    
@@ -638,7 +799,6 @@ sub get_keepers {
 	my @keys_perm = sort {$i_to_score{$b} <=> $i_to_score{$a}} keys %i_to_score;
 	my @keys = @keys_perm;
 	++$$p;
-	++$$xx;
 	my $keep;
 	my $keep_ok;
 	
@@ -662,7 +822,7 @@ sub get_keepers {
 	    $total -= $maybe_score;
 	}
 	$output = $$lines[$keep];
-	$output =~ s/\n/\tXY:Z:P\n/g;
+	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\n/g;
 	
 
 	## add more lines, if needed
@@ -673,7 +833,6 @@ sub get_keepers {
 	# loop cannot be entered if no_condense is set, read_num will always be zero by this point
 	for(my $j = $read_num; $j > 0; --$j) {
 	    ++$$p;
-	    ++$$xx;
 	    @keys = @keys_perm;
 	    $keep = '';
 	    $keep_ok = '';
@@ -696,7 +855,7 @@ sub get_keepers {
 		$total -= $maybe_score;
 	    }
 	    $swapee = $$lines[$keep];
-	    $swapee =~ s/\n/\tXY:Z:P\n/g;
+	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\n/g;
 	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
 	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
 	    $output .= $swapee;
@@ -748,34 +907,38 @@ sub what_bins {
 }
     
 
-sub call_bowtie {
-    my($genome,$orig_reads,$reads,$read_format,$quiet,$cores,$v) = @_; ## passed by reference ..all strings 
+sub call_bowtie_initial {
+    my($genome,$orig_reads,$reads,$read_format,$quiet,$cores,$v,$read_count,$query_count) = @_; ## passed by reference ..all strings 
 
     my $bowtie_call;
+    my $mmap_fasta_file;
+    
     if($$read_format eq "C") {
 	my $c_genome_base = "$$genome" . ".cs";
+	$mmap_fasta_file = "mmap1.csfasta";
 	if($$reads eq "NULL") {  
 	    ## in other words, no_condense, so use the original trimmed reads for alignment
-	    $bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$orig_reads";
+	    $bowtie_call = "bowtie -f -C -v $$v --best --strata --all -m 1 --max $mmap_fasta_file --col-keepends -p $$cores -S $c_genome_base $$orig_reads";
 	} else { 
-	    $bowtie_call = "bowtie -f -C -v $$v --all --best --strata --col-keepends -p $$cores -S $c_genome_base $$reads";
+	    $bowtie_call = "bowtie -f -C -v $$v --best --strata --all -m 1 --max $mmap_fasta_file --col-keepends -p $$cores -S $c_genome_base $$reads";
 	}
     } else {
+	$mmap_fasta_file = "mmap1.fasta";
 	if($$reads eq "NULL") {
 	    ## no_condense is active
-	    $bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$orig_reads";
+	    $bowtie_call = "bowtie -f -v $$v --best --strata --all -m 1 --max $mmap_fasta_file -p $$cores -S $$genome $$orig_reads";
 	} else {
-	    $bowtie_call = "bowtie -f -v $$v --all --best --strata -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
+	    $bowtie_call = "bowtie -f -v $$v --best --strata --all -m 1 --max $mmap_fasta_file -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
 	}
     }
     unless($$quiet) {
-	print STDERR "Calling bowtie with command:\n\t$bowtie_call ...\n";
+	print STDERR "\tCalling bowtie with command:\n\t$bowtie_call\n";
+	print STDERR "\tProgress \(dots indicate one percent of queries\):\n\t";
     }
     # progress counter
-    my $reads_done = 0;
-    my $century = 0;
-    my $mill = 0;
-
+    my $dots_done = 0;
+    my $dots_should_be_done = 0;
+    
     # strip the extension
     my $base;
     if($$reads eq "NULL") {
@@ -792,19 +955,16 @@ sub call_bowtie {
     (open(UNMAPPED, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $unmapped 2> /dev/null")) || return 0;
     my $unique_bam_prefix = "$orig_base" . "_unique_sorted";
     (open(UNIQUE, "| samtools view -S -b -u - 2> /dev/null | samtools sort - $unique_bam_prefix 2> /dev/null")) || return 0;
-    my $two_mapped = "$base" . "_2.sam.gz";
-    (open(TWO, "| gzip > $two_mapped")) || return 0;
-    my $five_mapped = "$base" . "_5.sam.gz";
-    (open(FIVE, "| gzip > $five_mapped")) || return 0;
-    my $multi_mapped = "$base" . "_mmapped.sam.gz";
-    (open(MMAP, "| gzip > $multi_mapped")) || return 0;
     
     # Counters
+    my $unmap_nr = 0;
+    my $unq_nr = 0;
+    my $mmap_nr = 0;
     my $unmap_n = 0;
     my $unq_n = 0;
-    my $two_n = 0;
-    my $five_n = 0;
     my $mmap_n = 0;
+    
+    my $query_n = 0;
     
     # open bowtie stream
     (open(BOWTIE, "$bowtie_call 2> /dev/null |")) || return 0;
@@ -824,9 +984,6 @@ sub call_bowtie {
 	if($_ =~ /^@/) {
 	    print UNMAPPED "$_";
 	    print UNIQUE "$_";
-	    print TWO "$_";
-	    print FIVE "$_";
-	    print MMAP "$_";
 	} else {
 	    if($_ =~ /^([^\t]+)\t(\d+)\t/) {
 		$this_read = $1;
@@ -836,55 +993,73 @@ sub call_bowtie {
 	    }
 	    if(($this_read ne $last_read) and
 	       ($last_read ne "NULL")) {
-		# progress
-		++$reads_done;
-		if($reads_done >= 100000) {
-		    ++$century;
-		    $reads_done = 0;
-		    unless($$quiet) {
+
+		# progress bar as percentage of queries
+		unless($$quiet) {
+		    ++$query_n;
+		    $dots_should_be_done = int (100 * ($query_n / $$query_count));
+		    until ($dots_done >= $dots_should_be_done) {
 			print STDERR ".";
-		    }
-		    if($century >= 10) {
-			++$mill;
-			$century = 0;
-			unless($$quiet) {
-			    print STDERR " $mill million non-redundant reads aligned and counting\n";
-			}
+			++$dots_done;
 		    }
 		}
+
 		process_string(\$string,\$aln_count);  ## adds XX:i to all, and XY:Z to unmapped and unique mapped
 		
-		
 		if($aln_count == 0) {
-		    ++$unmap_n;
-		    print UNMAPPED "$string";
 		    
-		    # expand if necessary
-		    unless($$reads eq "NULL") {
-			if ($last_read =~ /^(\S+)_(\d+)$/) {
-			    $readbase = $1;
-			    $count = $2;
-			} else {
-			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+		    ## could be either XM:i:0, for truly unmapped, or something else, for a -m violator.
+		    if($string =~ /\tXM:i:0\D/) {
+			# truly unmapped, report to the UNMAPPED output stream
+			++$unmap_n;
+			++$unmap_nr;
+			print UNMAPPED "$string";
+		    
+			# expand if necessary
+			unless($$reads eq "NULL") {
+			    if ($last_read =~ /^(\S+)_(\d+)$/) {
+				$readbase = $1;
+				$count = $2;
+			    } else {
+				die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
+			    }
+			    --$count;  ## increments for the one already written
+			    for(my $j = $count; $j > 0; --$j) {
+				$string =~ s/^[^\t]+\t//g;
+				$string = "$readbase" . "_" . "$j\t" . "$string";
+				print UNMAPPED "$string";
+				++$unmap_n;
+			    }
 			}
-			--$count;  ## increments for the one already written
-			for(my $j = $count; $j > 0; --$j) {
-			    $string =~ s/^[^\t]+\t//g;
-			    $string = "$readbase" . "_" . "$j\t" . "$string";
-			    print UNMAPPED "$string";
-			    ++$unmap_n;
+		    } else {
+			# suppress .. violated -m  ... just count em for reporting
+			++$mmap_n;
+			++$mmap_nr;
+			# expand if necessary
+			unless($$reads eq "NULL") {
+			    if ($last_read =~ /^(\S+)_(\d+)$/) {
+				$readbase = $1;
+				$count = $2;
+			    } else {
+				die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
+			    }
+			    --$count;  ## increments for the one already written
+			    for(my $j = $count; $j > 0; --$j) {
+				++$mmap_n;
+			    }
 			}
 		    }
 		} elsif ($aln_count == 1) {
 		    print UNIQUE "$string";
 		    ++$unq_n;
+		    ++$unq_nr;
 		    # expand if necessary
 		    unless($$reads eq "NULL") {
 			if ($last_read =~ /^(\S+)_(\d+)$/) {
 			    $readbase = $1;
 			    $count = $2;
 			} else {
-			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+			    die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
 			}
 			--$count;  ## increments for the one already written
 			for(my $j = $count; $j > 0; --$j) {
@@ -894,48 +1069,8 @@ sub call_bowtie {
 			    ++$unq_n;
 			}
 		    }
-		} elsif ($aln_count == 2) {
-		    print TWO "$string";
-		    # count the redundant reads
-		    if($$reads eq "NULL") {
-			++$two_n;
-		    } else {
-			if ($last_read =~ /^(\S+)_(\d+)$/) {
-			    $readbase = $1;
-			    $count = $2;
-			} else {
-			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-			}
-			$two_n += $count;
-		    }
-		} elsif (($aln_count >= 3) and ($aln_count <= 5)) {
-		    print FIVE "$string";
-		    if($$reads eq "NULL") {
-			++$five_n;
-		    } else {
-			if ($last_read =~ /^(\S+)_(\d+)$/) {
-			    $readbase = $1;
-			    $count = $2;
-			} else {
-			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-			}
-			$five_n += $count;
-		    }
-		} elsif ($aln_count > 5) {
-		    print MMAP "$string";
-		    # count the redundant reads
-		    if($$reads eq "NULL") {
-			++$mmap_n;
-		    } else {
-			if ($last_read =~ /^(\S+)_(\d+)$/) {
-			    $readbase = $1;
-			    $count = $2;
-			} else {
-			    die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-			}
-			$mmap_n += $count;
-		    }
 		}
+		
 		# clear
 		$string = '';
 		$aln_count = 0;
@@ -948,55 +1083,62 @@ sub call_bowtie {
 	}
     }
     # Last read
-    # progress
-    ++$reads_done;
-    if($reads_done >= 100000) {
-	++$century;
-	$reads_done = 0;
-	unless($$quiet) {
-	    print STDERR ".";
-	}
-	if($century >= 10) {
-	    ++$mill;
-	    $century = 0;
-	    unless($$quiet) {
-		print STDERR " $mill million non-redundant reads aligned and counting\n";
-	    }
-	}
-    }
+    
     process_string(\$string,\$aln_count);  ## adds XX:i to all, and XY:Z to unmapped and unique mapped
-    
-    
     if($aln_count == 0) {
-	++$unmap_n;
-	print UNMAPPED "$string";
 	
-	# expand if necessary
-	unless($$reads eq "NULL") {
-	    if ($last_read =~ /^(\S+)_(\d+)$/) {
-		$readbase = $1;
-		$count = $2;
-	    } else {
-		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+	## could be either XM:i:0, for truly unmapped, or something else, for a -m violator.
+	if($string =~ /\tXM:i:0\D/) {
+	    # truly unmapped, report to the UNMAPPED output stream
+	    ++$unmap_n;
+	    ++$unmap_nr;
+	    print UNMAPPED "$string";
+	    
+	    # expand if necessary
+	    unless($$reads eq "NULL") {
+		if ($last_read =~ /^(\S+)_(\d+)$/) {
+		    $readbase = $1;
+		    $count = $2;
+		} else {
+		    die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
+		}
+		--$count;  ## increments for the one already written
+		for(my $j = $count; $j > 0; --$j) {
+		    $string =~ s/^[^\t]+\t//g;
+		    $string = "$readbase" . "_" . "$j\t" . "$string";
+		    print UNMAPPED "$string";
+		    ++$unmap_n;
+		}
 	    }
-	    --$count;  ## increments for the one already written
-	    for(my $j = $count; $j > 0; --$j) {
-		$string =~ s/^[^\t]+\t//g;
-		$string = "$readbase" . "_" . "$j\t" . "$string";
-		print UNMAPPED "$string";
-		++$unmap_n;
+	} else {
+	    # suppress .. violated -m  ... just count em for reporting
+	    ++$mmap_n;
+	    ++$mmap_nr;
+	    # expand if necessary
+	    unless($$reads eq "NULL") {
+		if ($last_read =~ /^(\S+)_(\d+)$/) {
+		    $readbase = $1;
+		    $count = $2;
+		} else {
+		    die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
+		}
+		--$count;  ## increments for the one already written
+		for(my $j = $count; $j > 0; --$j) {
+		    ++$mmap_n;
+		}
 	    }
 	}
     } elsif ($aln_count == 1) {
 	print UNIQUE "$string";
 	++$unq_n;
+	++$unq_nr;
 	# expand if necessary
 	unless($$reads eq "NULL") {
 	    if ($last_read =~ /^(\S+)_(\d+)$/) {
 		$readbase = $1;
 		$count = $2;
 	    } else {
-		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
+		die "FATAL in sub-routine call_bowtie_initial .. failed to parse count from read name $last_read\n";
 	    }
 	    --$count;  ## increments for the one already written
 	    for(my $j = $count; $j > 0; --$j) {
@@ -1006,85 +1148,29 @@ sub call_bowtie {
 		++$unq_n;
 	    }
 	}
-    } elsif ($aln_count == 2) {
-	print TWO "$string";
-	# count the redundant reads
-	if($$reads eq "NULL") {
-	    ++$two_n;
-	} else {
-	    if ($last_read =~ /^(\S+)_(\d+)$/) {
-		$readbase = $1;
-		$count = $2;
-	    } else {
-		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-	    }
-	    $two_n += $count;
-	}
-    } elsif (($aln_count >= 3) and ($aln_count <= 5)) {
-	print FIVE "$string";
-	if($$reads eq "NULL") {
-	    ++$five_n;
-	} else {
-	    if ($last_read =~ /^(\S+)_(\d+)$/) {
-		$readbase = $1;
-		$count = $2;
-	    } else {
-		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-	    }
-	    $five_n += $count;
-	}
-    } elsif ($aln_count > 5) {
-	print MMAP "$string";
-	# count the redundant reads
-	if($$reads eq "NULL") {
-	    ++$mmap_n;
-	} else {
-	    if ($last_read =~ /^(\S+)_(\d+)$/) {
-		$readbase = $1;
-		$count = $2;
-	    } else {
-		die "FATAL in sub-routine call_bowtie .. failed to parse count from read name $last_read\n";
-	    }
-	    $mmap_n += $count;
-	}
     }
     
     close BOWTIE;
     close UNMAPPED;
     close UNIQUE;
-    close TWO;
-    close FIVE;
-    close MMAP;
     
-    # get some stats
-    my $total_n = $unmap_n + $unq_n + $two_n + $five_n + $mmap_n;
-    my $mapped_n = $total_n - $unmap_n;
-
-    # failsafe
-    if($mapped_n == 0) {
-	print STDERR "\nABORT: Zero reads were mapped\!\n";
-	exit;
+    # Verify presence of the --max file
+    unless(-r $mmap_fasta_file) {
+	die "FATAL in sub-routine call_bowtie_initial ... after bowtie run, expected --max file $mmap_fasta_file not readable\n";
     }
-
-    my $unmap_per = sprintf("%.1f",(100*($unmap_n / $total_n)));
-    my $map_per = sprintf("%.1f",(100*($mapped_n / $total_n)));
-
-    my $unq_per = sprintf("%.1f",(100*($unq_n / $mapped_n)));
-    my $two_per = sprintf("%.1f",(100*($two_n / $mapped_n)));
-    my $five_per = sprintf("%.1f",(100*($five_n / $mapped_n)));
-    my $mmap_per = sprintf("%.1f",(100*($mmap_n / $mapped_n)));
+    
+    # update ....
+    $$read_count -= $unmap_n;
+    $$read_count -= $unq_n;
+    $$query_count -= $unmap_nr;
+    $$query_count -= $unq_nr;
+    
+    
     
     unless($$quiet) {
 	print STDERR " Done\n";
-	print STDERR "Unmapped Reads: $unmap_n \/ $total_n \($unmap_per\%\)\n";
-	print STDERR "Mapped Reads: $mapped_n \/ $total_n \($map_per\%\)\n";
-
-	print STDERR "\tUniquely Placed Reads: $unq_n \/ $mapped_n \($unq_per\%\)\n";
-	print STDERR "\tReads with two possible placements: $two_n \/ $mapped_n \($two_per\%\)\n";
-	print STDERR "\tReads with three, four, or five possible placements: $five_n \/ $mapped_n \($five_per\%\)\n";
-	print STDERR "\tReads with more than five possible placements:  $mmap_n \/ $mapped_n \($mmap_per\%\)\n";
     }
-    return ($unmap_n,$unq_n,$two_n,$five_n,$mmap_n);
+    return ($unmap_n,$unq_n,$mmap_fasta_file);
 }
 
 sub process_string {
@@ -1168,6 +1254,7 @@ OPTIONS:
    --no_condense: Do not condense to a non-redundant set of sequences for bowtie. Preserves original read names, but is much slower.
    --mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
    --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-100.
+   --max_rep [integer]: Maximum number of possible alignments. Reads with more than this number of possible placements are not retained in the final alignment. Default 1000. Must be integer >=6.
    --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adpater trimming is enabled.
 
 DOCUMENTATION:
@@ -1475,6 +1562,8 @@ butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-00.
 
+--max_rep [integer]: Maximum number of possible placements for a read. Reads with a number of placements more than --max_rep will be reported as unmapped. Default: 1000. Must be integer of at least 6.
+
 --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adapter trimming is enabled.
 
 =head1 INPUT FILES
@@ -1483,7 +1572,7 @@ butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 Files must be in FASTA, FASTQ, or colorspace-fasta format. File extensions must be used to indicate the format. .fasta and .fa are acceptable for FASTA files. .fastq and .fq are accetpable for colorspace files. .csfasta must be used for color-space files. There is no support for paired-end reads.
 
-Colorspace data is assumed to conform to colorspace-FASTA specifications (beginning with a nucleotide, followed by a string of colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are provided, it is assumed that the 'hybrid' color at the 3' end has been removed. If colorspace data are trimmed by butter, the hybrid color at the 3' end will be removed (see below).
+Colorspace data are assumed to conform to colorspace-FASTA specifications (beginning with a nucleotide, followed by a string of colors [0,1,2,3] or ambiguity codes [.]. If trimmed colorspace data are provided, it is assumed that the 'hybrid' color at the 3' end has been removed. If colorspace data are trimmed by butter, the hybrid color at the 3' end will be removed (see below).
 
 =head2 Reference genome
 
@@ -1517,23 +1606,19 @@ The condensed read names follow a simple system. Consider an example read name:
 
 The '758883' indicates that this is unique sequence number 758883 (arbitrarily ordered). The '12' indicates that there were 12 reads in the input file with this sequence.
 
-The option --no_condense turns off read condensation, so the original read names are preserved. This option is much slower.
+The option --no_condense turns off read condensation, so the original read names are preserved. This option is much slower. If option --no_condense is used for an input file in FASTQ format, a FASTA version of the reads will be written to disk.
 
-=head2 bowtie alignment
+=head2 Alignments and placements
 
-bowtie alignment utilizes the condensed reads, unless option --no_condense is active. The settings force the reporting of ALL valid alignments for each of the non-redundant queries (e.g., each read from the condensed file). The resulting stream of alignments is parsed into one of five output files: reads that mapped to 0 locations, 1 location, 2 locations, 3-5 locations, and >5 locations. The placement of the 0-located and 1-located queries is final, so those data are de-condensed (see below), and sorted to make bam files during the alignment phase. For the 2, 3-5, and >5 placed reads, all possible placements are stored in temporary .sam.gz files at the alignment stage for later analysis. Note that these files could be huge for highly repetitive genomes and/or large libraries.
+Four iterations of bowtie are called successively on the reads after adapter trimming (if applicable) and condensation (if applicable) and conversion from FASTQ to FASTA format (if applicable, see above).
 
-=head2 Placement
+The first iteration uses bowtie setting -m 1 to limit alignments to reads with only one unique possible position in the reference genome. This output stream is parsed to retain unmapped reads, and reads with unique alignments. Using bowtie's --max option, reads with more than 1 possible alignment are written to a temporary FASTA or csFASTA file.
 
-First, the densities of the uniquely placed reads are tallied, genome-wide, using a sliding window of 250 nts, and a step size of 50 nts. The density in each window is simply the sum of all of the read-depths at each nt in the window (e.g., 'area under curve').
+After this, the densities of the uniquely placed reads are tallied, genome-wide, using a sliding window of 250 nts, and a step size of 50 nts. The density in each window is simply the sum of all of the read-depths at each nt in the window (e.g., 'area under curve').
 
-After calculating the densities, both possible placements for each read that had 2 possible locations are analyzed. Each location falls into 5 different windows .. the window with the maximum score is taken as the existing density of each placement. In cases where all possible placements have an exisiting density of zero, the choice of which placement to retain is simply random. If one possible placement has existing density and the other doesn't, the retained placement will be that which is next to existing density. If both possible placements have existing density, the retained placement will be selected based on probabilities dictated by the relative density abundances among the two choices. For example, if placement one had a maximum density score of 70, and and placement two had a maximum density score of 30, the probability of placement one being retained is 70 / (70 + 30) [e.g. 70%] and the probability of placement two being retained is 30 / (70 + 30) [e.g. 30%].
+The second bowtie iteration uses the multi-mapped reads set aside in the first iteration for a run with bowtie -m set to 2. Thus, only reads with 2 possible placements are output.  After calculating the densities, both possible placements for each read that had 2 possible locations are analyzed. Each location falls into 5 different windows .. the window with the maximum score is taken as the existing density of each placement. In cases where all possible placements have an exisiting density of zero, the choice of which placement to retain is simply random. If one possible placement has existing density and the other doesn't, the retained placement will be that which is next to existing density. If both possible placements have existing density, the retained placement will be selected based on probabilities dictated by the relative density abundances among the two choices. For example, if placement one had a maximum density score of 70, and and placement two had a maximum density score of 30, the probability of placement one being retained is 70 / (70 + 30) [e.g. 70%] and the probability of placement two being retained is 30 / (70 + 30) [e.g. 30%]. As in the first iteration, reads with multi-mappings higher than the -m set point are written to a temporary FASTA or csFASTA file for analysis in the next iteration.
 
-After the reads with 2 possible reads are processed, they are sorted and written to a bam file, and the sam.gz file is deleted. The genome-wide densities are then updated using the new information gleaned from placing the 2-mapped reads.
-
-The process is the iterated two more times .. first for the reads with 3-5 possible placements, and finally for the reads with >5 possible placements.
-
-De-condensation (see below) of multi-mapped reads happens during the placement process as well. Each de-condensed read is individually assessed using the process described above.
+After the process is repeated for two more iterations .. the densities are updated with the new data, and multi-mapped reads that remain are re-mapped iteratively. Iteration three captures reads with 3-5 possible placements, and iteration four captures reads with between 5 and --max_rep number of placements (default is 1000).
 
 =head2 De-condensation
 
@@ -1543,6 +1628,18 @@ Note that, for reads with more than 1 potential placement, each de-condensed rea
 
 =head2 Merging
 
-After all iterations of placements and density calculations have completed, the resulting 5 sorted bam files are merged to a single final bam alignment, and the intermediate bam files deleted.
+After all iterations of placements and density calculations have completed, the resulting sorted bam files are merged to a single final bam alignment, and the intermediate bam files deleted.
+
+=head2 Temporary files
+
+butter writes a number of temporary files to disk during a run .. intermediate BAM files, and temporary FASTA (or csFASTA) files. These will all be deleted at the completetion of the run.
+
+=head1 OUTPUT
+
+The output is a single BAM alignment file sorted by chromosomal position. The BAM header includes lines describing the run. butter adds two optional tags for each alignment. All reads are in the alignment file, including reads that were unmapped (unmapped reads have bit 0x4 set in the SAM FLAG field, per SAM specification). Reads that were unmapped because they had zero possible alignments with the reference have optional tag XM:i set to 0, while reads that were unmapped becuase they had more than --max_rep possible placements have XM:i set to a high number (equal to whatever setting of --max_rep was used in the run).  The XM:i custom tag comes from bowtie (see bowtie documentation).
+
+Custom tag XX:i: indicates number of valid placements for the read (of which only one is being shown)
+
+Custom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed.
 
 =cut
