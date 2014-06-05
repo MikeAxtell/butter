@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.2.0"; 
+my $version_num = "0.2.1"; 
 my $help_message = get_help($version_num);
 
 my $version;
@@ -380,12 +380,15 @@ while (<INH>) {
     if($_ =~ /\tSO:/) {
 	$_ =~ s/\tSO:\S+/\tSO:coordinate/g;
     }
-    print OUTH "$_";
+    unless ($_ =~ /\@PG\t/) {
+	print OUTH "$_";
+    }
 }
 close INH;
 print OUTH "\@PG\tID:butter\tVN:$version_num\tCL:\"$cl\"\n";
 print OUTH "\@CO\tCustom tag XX:i: indicates number of valid placements for the read\n";
 print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed\n";
+print OUTH "\@CO\tCustom tag XZ:f: indicates the probability as estimated by butter, of that read having come from the given location. Set to 1 for unmapped and uniquely mapped reads.\n";
 print OUTH "\@CO\tOther custom tags from bowtie, see bowtie documentation\n";
 close OUTH;
 
@@ -553,13 +556,18 @@ sub call_bowtie_iterative {
     
     # prepare the bowtie call
     my $bowtie_call;
-    my $mmap_fasta_file;
+    my $mmap_fasta_file = $$base;
+    unless($$no_condense) {
+	$mmap_fasta_file .= "_condensed";
+    }
+    $mmap_fasta_file .= "_mmap";
+    $mmap_fasta_file .= "$$max";
     if($$read_format eq "C") {
 	my $c_genome_base = "$$genome" . ".cs";
-	$mmap_fasta_file = "mmap" . "$$max" . ".csfasta";
+	$mmap_fasta_file .= ".csfasta";
 	$bowtie_call = "bowtie -f -C -v $$mismatches --best --strata --all -m $$max --max $mmap_fasta_file --col-keepends -p $$aln_cores -S $c_genome_base $$fasta_file";
     } else {
-	$mmap_fasta_file = "mmap" . "$$max" . ".fasta";
+	$mmap_fasta_file .= ".fasta";
 	$bowtie_call = "bowtie -f -v $$mismatches --best --strata --all -m $$max --max $mmap_fasta_file -p $$aln_cores -S $$genome $$fasta_file";
     }
     unless($$quiet) {
@@ -714,15 +722,15 @@ sub get_keepers {
     }
 
     my $swapee;
-
+    
     # First check if it is a -m violator ... it would be a single line, containing XM:i:[int] where [int] is a non-zero integer,
     if((scalar @$lines) == 1) {
 	if($$lines[0] =~ /\tXM:i:(\d+)/) {
 	    if($1 > 0) {
 		++$$m;
-		# Set XX:i to 0, and XY:Z to M
+		# Set XX:i to 0, and XY:Z to M, and XZ:f to 1
 		$output = $$lines[0];
-		$output =~ s/\n/\tXX:i:0\tXY:Z:M\n/g;
+		$output =~ s/\n/\tXX:i:0\tXY:Z:M\tXZ:f:1\n/g;
 		
 		# increment to account for the one already written
 		--$read_num;
@@ -732,7 +740,7 @@ sub get_keepers {
 		for(my $j = $read_num; $j > 0; --$j) {
 		    ++$$m;
 		    $swapee = $$lines[0];
-		    $swapee =~ s/\n/\tXX:i:0\tXY:Z:M\n/g;
+		    $swapee =~ s/\n/\tXX:i:0\tXY:Z:M\tXZ:f:1\n/g;
 		    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
 		    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
 		    $output .= $swapee;
@@ -765,14 +773,15 @@ sub get_keepers {
     
     
     my $xx_i = scalar(@$lines);
-    
+    my $XZf;
     if($total == 0) {
 	# no guidance, randomly select
 	
 	++$$r;
 	$best = int(rand(scalar(@$lines)));
+	$XZf = sprintf("%.3f",1/(scalar(@$lines)));
 	$output = $$lines[$best];
-	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\n/g;
+	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
 	
 	# increment to account for the one already written
 	--$read_num;
@@ -783,7 +792,7 @@ sub get_keepers {
 	    ++$$r;
 	    $best = int(rand(scalar(@$lines)));
 	    $swapee = $$lines[$best];
-	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\n/g;
+	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
 	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
 	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
 	    
@@ -809,6 +818,7 @@ sub get_keepers {
 	    $maybe = shift @keys;
 	    $maybe_score = $i_to_score{$maybe};
 	    $chance = $maybe_score / $total;
+	    $XZf = sprintf("%.3f",($maybe_score / $total_perm));
 	    if($chance == 1) {
 		$keep = $maybe;
 		$keep_ok = 1;
@@ -822,7 +832,7 @@ sub get_keepers {
 	    $total -= $maybe_score;
 	}
 	$output = $$lines[$keep];
-	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\n/g;
+	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\tXZ:f:$XZf\n/g;
 	
 
 	## add more lines, if needed
@@ -842,6 +852,7 @@ sub get_keepers {
 		$maybe = shift @keys;
 		$maybe_score = $i_to_score{$maybe};
 		$chance = $maybe_score / $total;
+		$XZf = sprintf("%.3f",($maybe_score / $total_perm));
 		if($chance == 1) {
 		    $keep = $maybe;
 		    $keep_ok = 1;
@@ -855,7 +866,7 @@ sub get_keepers {
 		$total -= $maybe_score;
 	    }
 	    $swapee = $$lines[$keep];
-	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\n/g;
+	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:P\tXZ:f:$XZf\n/g;
 	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
 	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
 	    $output .= $swapee;
@@ -912,22 +923,27 @@ sub call_bowtie_initial {
 
     my $bowtie_call;
     my $mmap_fasta_file;
-    
     if($$read_format eq "C") {
 	my $c_genome_base = "$$genome" . ".cs";
-	$mmap_fasta_file = "mmap1.csfasta";
 	if($$reads eq "NULL") {  
 	    ## in other words, no_condense, so use the original trimmed reads for alignment
+	    $mmap_fasta_file = $$orig_reads;
+	    $mmap_fasta_file =~ s/\.[^\.]+$/_mmap1\.csfasta/g;
 	    $bowtie_call = "bowtie -f -C -v $$v --best --strata --all -m 1 --max $mmap_fasta_file --col-keepends -p $$cores -S $c_genome_base $$orig_reads";
 	} else { 
+	    $mmap_fasta_file = $$reads;
+	    $mmap_fasta_file =~ s/\.[^\.]+$/_mmap1\.csfasta/g;
 	    $bowtie_call = "bowtie -f -C -v $$v --best --strata --all -m 1 --max $mmap_fasta_file --col-keepends -p $$cores -S $c_genome_base $$reads";
 	}
     } else {
-	$mmap_fasta_file = "mmap1.fasta";
 	if($$reads eq "NULL") {
 	    ## no_condense is active
+	    $mmap_fasta_file = $$orig_reads;
+	    $mmap_fasta_file =~ s/\.[^\.]+$/_mmap1\.fasta/g;
 	    $bowtie_call = "bowtie -f -v $$v --best --strata --all -m 1 --max $mmap_fasta_file -p $$cores -S $$genome $$orig_reads";
 	} else {
+	    $mmap_fasta_file = $$reads;
+	    $mmap_fasta_file =~ s/\.[^\.]+$/_mmap1\.fasta/g;
 	    $bowtie_call = "bowtie -f -v $$v --best --strata --all -m 1 --max $mmap_fasta_file -p $$cores -S $$genome $$reads";  ## always -f because of read condensation process
 	}
     }
@@ -1011,6 +1027,8 @@ sub call_bowtie_initial {
 		    ## could be either XM:i:0, for truly unmapped, or something else, for a -m violator.
 		    if($string =~ /\tXM:i:0\D/) {
 			# truly unmapped, report to the UNMAPPED output stream
+			# add XZ:f custom tag, set to 1 (we are 100% sure it is unmapped)
+			$string =~ s/\n/\tXZ:f:1\n/;
 			++$unmap_n;
 			++$unmap_nr;
 			print UNMAPPED "$string";
@@ -1033,6 +1051,7 @@ sub call_bowtie_initial {
 			}
 		    } else {
 			# suppress .. violated -m  ... just count em for reporting
+			# no need to add XZ custom tag, these are being suppressed
 			++$mmap_n;
 			++$mmap_nr;
 			# expand if necessary
@@ -1050,6 +1069,8 @@ sub call_bowtie_initial {
 			}
 		    }
 		} elsif ($aln_count == 1) {
+		    ## add XZ custom tag, set to 1 (we are 100% sure these are unique mappers)
+		    $string =~ s/\n/\tXZ:f:1\n/;
 		    print UNIQUE "$string";
 		    ++$unq_n;
 		    ++$unq_nr;
@@ -1090,6 +1111,8 @@ sub call_bowtie_initial {
 	## could be either XM:i:0, for truly unmapped, or something else, for a -m violator.
 	if($string =~ /\tXM:i:0\D/) {
 	    # truly unmapped, report to the UNMAPPED output stream
+	    # add XZ:f custom tag, set to 1 (we are 100% sure it is unmapped)
+	    $string =~ s/\n/\tXZ:f:1\n/;
 	    ++$unmap_n;
 	    ++$unmap_nr;
 	    print UNMAPPED "$string";
@@ -1112,6 +1135,7 @@ sub call_bowtie_initial {
 	    }
 	} else {
 	    # suppress .. violated -m  ... just count em for reporting
+	    # no need to add XZ custom tag, these are being suppressed
 	    ++$mmap_n;
 	    ++$mmap_nr;
 	    # expand if necessary
@@ -1129,6 +1153,8 @@ sub call_bowtie_initial {
 	    }
 	}
     } elsif ($aln_count == 1) {
+	## add XZ custom tag, set to 1 (we are 100% sure these are unique mappers)
+	$string =~ s/\n/\tXZ:f:1\n/;
 	print UNIQUE "$string";
 	++$unq_n;
 	++$unq_nr;
@@ -1636,10 +1662,12 @@ butter writes a number of temporary files to disk during a run .. intermediate B
 
 =head1 OUTPUT
 
-The output is a single BAM alignment file sorted by chromosomal position. The BAM header includes lines describing the run. butter adds two optional tags for each alignment. All reads are in the alignment file, including reads that were unmapped (unmapped reads have bit 0x4 set in the SAM FLAG field, per SAM specification). Reads that were unmapped because they had zero possible alignments with the reference have optional tag XM:i set to 0, while reads that were unmapped becuase they had more than --max_rep possible placements have XM:i set to a high number (equal to whatever setting of --max_rep was used in the run).  The XM:i custom tag comes from bowtie (see bowtie documentation).
+The output is a single BAM alignment file sorted by chromosomal position. The BAM header includes lines describing the run. butter adds three custom tags for each alignment. All reads are in the alignment file, including reads that were unmapped (unmapped reads have bit 0x4 set in the SAM FLAG field, per SAM specification). Reads that were unmapped because they had zero possible alignments with the reference have optional tag XM:i set to 0, while reads that were unmapped becuase they had more than --max_rep possible placements have XM:i set to a high number (equal to whatever setting of --max_rep was used in the run).  The XM:i custom tag comes from bowtie (see bowtie documentation).
 
 Custom tag XX:i: indicates number of valid placements for the read (of which only one is being shown)
 
 Custom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed.
+
+Custom tag XZ:f: indicates the probability that the given read came from the reported position, based on the butter iterative density analysis. Set to 1 for reads with XY:Z: of M, U, and N.
 
 =cut

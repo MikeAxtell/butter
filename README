@@ -218,7 +218,7 @@ METHODS
 OUTPUT
     The output is a single BAM alignment file sorted by chromosomal
     position. The BAM header includes lines describing the run. butter adds
-    two optional tags for each alignment. All reads are in the alignment
+    three custom tags for each alignment. All reads are in the alignment
     file, including reads that were unmapped (unmapped reads have bit 0x4
     set in the SAM FLAG field, per SAM specification). Reads that were
     unmapped because they had zero possible alignments with the reference
@@ -234,4 +234,8 @@ OUTPUT
     uniquely mapped, P: multi-mapped and placed due to clustering, R:
     multi-mapped and randomly placed, N: unmapped, M: Multi-mappings
     exceeded setting --max_rep, so no placement performed.
+
+    Custom tag XZ:f: indicates the probability that the given read came from
+    the reported position, based on the butter iterative density analysis.
+    Set to 1 for reads with XY:Z: of M, U, and N.
 
