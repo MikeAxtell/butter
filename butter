@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.2.1ranmax"; 
+my $version_num = "0.2.2"; 
 my $help_message = get_help($version_num);
 
 my $version;
