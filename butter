@@ -176,18 +176,6 @@ if($bowtie_check) {
     exit;
 }
 
-$c_query = "gzip";
-my $gzip_check = check_install($c_query);
-if($gzip_check) {
-    unless($quiet) {
-	print STDERR "\tgzip: $gzip_check\n";
-    }
-} else {
-    unless ($quiet) {
-	print STDERR "\tgzip: FAIL - ABORT because no gzip installation found\n";
-    }
-    exit;
-}
 
 # Check for indexed reference genome .. expect to find .1.ebwt, .2.ebwt, .3.ebwt, .4.ebwt, .rev.1.ebwt, .rev.2.ebwt
 # If colorspace, expect to find .cs.1.ebwt, .cs.2.ebwt, .cs.3.ebwt, .cs.4.ebwt, .cs.rev.1.ebwt, .cs.rev.2.ebwt
@@ -1330,7 +1318,6 @@ USAGE: butter [options] [reads.fa\/.fasta\/.fq\/.fastq\/.csfasta] [genome.fa]
 DEPENDENCIES:
    samtools
    bowtie
-   gzip
 
 OPTIONS:
    --version : print version and quit
