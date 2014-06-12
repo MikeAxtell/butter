@@ -59,9 +59,15 @@ OPTIONS
     --aln_cores [integer]: Number of processor cores to use during bowtie
     alignment phase. Default 1. Must be integer 1-00.
 
-    --max_rep [integer]: Maximum number of possible placements for a read.
-    Reads with a number of placements more than --max_rep will be reported
-    as unmapped. Default: 1000. Must be integer of at least 6.
+    --max_rep [integer]: Maximum number of possible placements for a
+    multi-mapped read being guided by density. Such reads with a number of
+    placements more than --max_rep will be reported as unmapped and have
+    custom tag XY:Z set to M. Default: 1000. Must be integer of at least 6.
+
+    --ranmax [integer]: Maximum number of possible placements for a
+    multi-mapped read that can't be guided by density. Such reads with a
+    number of placements more than --ranmax will be reported as unmapped and
+    have custom tag XY:Z set to O. Default: 3. Must be integer of 1 or more.
 
     --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more
     ATGCatgc characters. If specified, 3' adapter trimming is enabled.
@@ -220,12 +226,9 @@ OUTPUT
     position. The BAM header includes lines describing the run. butter adds
     three custom tags for each alignment. All reads are in the alignment
     file, including reads that were unmapped (unmapped reads have bit 0x4
-    set in the SAM FLAG field, per SAM specification). Reads that were
-    unmapped because they had zero possible alignments with the reference
-    have optional tag XM:i set to 0, while reads that were unmapped becuase
-    they had more than --max_rep possible placements have XM:i set to a high
-    number (equal to whatever setting of --max_rep was used in the run). The
-    XM:i custom tag comes from bowtie (see bowtie documentation).
+    set in the SAM FLAG field, per SAM specification). Other custom tags not
+    described below are from bowtie .. see bowtie documentation for their
+    meaning.
 
     Custom tag XX:i: indicates number of valid placements for the read (of
     which only one is being shown)
@@ -233,9 +236,11 @@ OUTPUT
     Custom tag XY:Z: indicates how the reported placement was selected. U:
     uniquely mapped, P: multi-mapped and placed due to clustering, R:
     multi-mapped and randomly placed, N: unmapped, M: Multi-mappings
-    exceeded setting --max_rep, so no placement performed.
+    exceeded setting --max_rep, so no placement performed, O: multi-mapped
+    with no density-based placement possible, number of locations exceeded
+    setting --ranmax, so no placement performed.
 
     Custom tag XZ:f: indicates the probability that the given read came from
     the reported position, based on the butter iterative density analysis.
-    Set to 1 for reads with XY:Z: of M, U, and N.
+    Set to 1 for reads with XY:Z: of M, U, N, and O.
 

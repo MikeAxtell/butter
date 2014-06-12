@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.2.1"; 
+my $version_num = "0.2.1ranmax"; 
 my $help_message = get_help($version_num);
 
 my $version;
@@ -13,6 +13,7 @@ my $aln_cores = 1;
 my $max_rep = 1000;
 my $adapter;
 my $no_condense;
+my $ranmax = 3;
 
 # for use at the end
 my $cl = join(" ", @ARGV);
@@ -32,6 +33,7 @@ GetOptions ('version' => \$version,
 	    'aln_cores=i' => \$aln_cores,
 	    'max_rep=i' => \$max_rep,
 	    'adapter=s' => \$adapter,
+	    'ranmax=i' => \$ranmax,
             'no_condense' => \$no_condense);
 
 # If version, print version_num and quit
@@ -77,6 +79,11 @@ unless(($aln_cores =~ /^\d+$/) and ($aln_cores >= 1) and ($aln_cores <= 100)) {
 unless(($max_rep =~ /^\d+$/) and ($max_rep >= 6)) {
     print "FATAL: option --max_rep must be an integer of at least 6.\n$help_message\n";
     exit;
+}
+
+# ranmax must be an integer of at leasr 1
+unless(($ranmax =~ /^\d+$/) and ($ranmax >= 1)) {
+    print "FATAL: option --ranmax must be an integer of at least 1.\n$help_message\n";
 }
 
 # If the adapter is specified, it must be ATGCatgc 8 or more
@@ -135,7 +142,8 @@ unless($quiet) {
 	print STDERR "Read condensation: ON\n";
     }
     print STDERR "Max Mismatches: $mismatches\n";
-    print STDERR "Max number of possible placments: $max_rep\n";
+    print STDERR "Max number of possible placments for any read: $max_rep\n";
+    print STDERR "Max number of possible placement for reads not guideable by density: $ranmax\n";
     print STDERR "Processor cores for bowtie: $aln_cores\n";
     print STDERR "Checking dependencies\n";
 }
@@ -295,8 +303,9 @@ my $max = 2;
 my $r = 0;
 my $p = 0;
 my $m = 0;
+my $o = 0;
 
-my($two_bam,$two_m_bam,$mmap2_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap1_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
+my($two_bam,$two_m_bam,$mmap2_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap1_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m,\$o,\$ranmax);
 
 $m = 0;
 
@@ -324,7 +333,7 @@ unless($quiet) {
     print STDERR "Bowtie iteration three: $query_count queries representing $read_count reads\n";
 }
 $max = 5;
-my($five_bam,$five_m_bam,$mmap5_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap2_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
+my($five_bam,$five_m_bam,$mmap5_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap2_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m,\$o,\$ranmax);
 
 $m = 0;
 
@@ -355,7 +364,7 @@ unless($quiet) {
 # 
 
 $max = $max_rep;
-my($max_bam,$real_m_bam,$mmapmax_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap5_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m);
+my($max_bam,$real_m_bam,$mmapmax_fasta_file) = call_bowtie_iterative(\$genome,\$base,\$quiet,\$no_condense,\$max,\$aln_cores,\$mismatches,\%bin_dens,\$mmap5_fasta_file,\$read_format,\$read_count,\$query_count,\$r,\$p,\$m,\$o,\$ranmax);
 
 
 unless(-r $max_bam) {
@@ -387,7 +396,13 @@ while (<INH>) {
 close INH;
 print OUTH "\@PG\tID:butter\tVN:$version_num\tCL:\"$cl\"\n";
 print OUTH "\@CO\tCustom tag XX:i: indicates number of valid placements for the read\n";
-print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed\n";
+print OUTH "\@CO\tCustom tag XY:Z: indicates how the reported placement was selected.\n";
+print OUTH "\@CO\tXY:Z:U indicates uniquely mapped read.\n";
+print OUTH "\@CO\tXY:Z:P indicates multi-mapped and placed due to clustering.\n";
+print OUTH "\@CO\tXY:Z:R indicates multi-mapped and randomly placed.\n";
+print OUTH "\@CO\tXY:Z:N indicates unmapped because there were 0 valid alignment locations.\n";
+print OUTH "\@CO\tXY:Z:M indicates unampped because it was a multi-mapped read where the number of valid alignment locations exceeded setting --max_rep.\n";
+print OUTH "\@CO\tXY:Z:O indicates unmapped because it was a multi-mapped read which could not be placed by clustering, and whose number of valid alignment locations exceeded setting --ranmax.\n";
 print OUTH "\@CO\tCustom tag XZ:f: indicates the probability as estimated by butter, of that read having come from the given location. Set to 1 for unmapped and uniquely mapped reads.\n";
 print OUTH "\@CO\tOther custom tags from bowtie, see bowtie documentation\n";
 close OUTH;
@@ -407,7 +422,8 @@ unless($quiet) {
     print STDERR "Summary of alignment file $final_bam",":\n";
     my $unmap_per = sprintf("%.1f", (100*($unmap_n / $read_count_all)));
     my $m_per = sprintf("%.1f", (100*($m / $read_count_all)));
-    my $unplaced_sum = $unmap_n + $m;
+    my $o_per = sprintf("%.1f", (100*($o / $read_count_all)));
+    my $unplaced_sum = $unmap_n + $m + $o;
     my $unplaced_per = sprintf("%.1f", (100*($unplaced_sum / $read_count_all)));
     my $unq_per = sprintf("%.1f", (100*($unq_n / $read_count_all)));
     my $r_per = sprintf("%.1f", (100*($r / $read_count_all)));
@@ -420,6 +436,8 @@ unless($quiet) {
     print STDERR "$unmap_n \/ $read_count_all \($unmap_per\%\)\n";
     print STDERR "  Unmapped because more than $max_rep possible positions: ";
     print STDERR "$m \/ $read_count_all \($m_per\%\)\n";
+    print STDERR "  Unmapped because placement random with more than $ranmax possible positions: ";
+    print STDERR "$o \/ $read_count_all \($o_per\%\)\n";
     print STDERR "Uniquely mapped reads: ";
     print STDERR "$unq_n \/ $read_count_all \($unq_per\%\)\n";
     print STDERR "Multi-mapped reads: ";
@@ -430,7 +448,7 @@ unless($quiet) {
     print STDERR "$p \/ $read_count_all \($p_per\%\)\n";
 }
 
-# goodbye!
+# too da loo
 unless($quiet) {
     print STDERR "Completed at ";
     print STDERR `date`;
@@ -552,7 +570,7 @@ sub get_nr_trimmed {
 
 
 sub call_bowtie_iterative {
-    my($genome,$base,$quiet,$no_condense,$max,$aln_cores,$mismatches,$bin_dens,$fasta_file,$read_format,$read_count,$query_count,$r,$p,$m) = @_; ## passed by references .. all strings except the hash bin_dens
+    my($genome,$base,$quiet,$no_condense,$max,$aln_cores,$mismatches,$bin_dens,$fasta_file,$read_format,$read_count,$query_count,$r,$p,$m,$o,$ranmax) = @_; ## passed by references .. all strings except the hash bin_dens
     
     # prepare the bowtie call
     my $bowtie_call;
@@ -577,13 +595,14 @@ sub call_bowtie_iterative {
     
     # progress counter
     my $queries_done = 0;
-    my $queries_rp = 0;
+    my $queries_rpo = 0;
     my $queries_m = 0;
     my $dots_printed = 0;
     my $dots_should_be_printed = 0;
     my $r_at_start = $$r;
     my $p_at_start = $$p;
     my $m_at_start = $$m;
+    my $o_at_start = $$o;
     
     # open output streams
     my $out_base = "$$base" . "$$max" . "_placed_sorted";
@@ -616,13 +635,13 @@ sub call_bowtie_iterative {
 		
 		# process and output
 
-		$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense);
+		$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense,\$$o,\$$ranmax);
 		if($keep =~ /\tXY:Z:M/) {
 		    print MBAM "$keep";
 		    ++$queries_m;
 		} else {
 		    print BAM "$keep";
-		    ++$queries_rp;
+		    ++$queries_rpo;
 		}
 		
 		# reset
@@ -649,13 +668,13 @@ sub call_bowtie_iterative {
     
     # process and output
     if($lines[0]) {
-	$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense);
+	$keep = get_keepers(\@scores,\@lines,\$$r,\$$p,\$$m,\$last_read,\$$no_condense,\$$o,\$$ranmax);
 	if($keep =~ /\tXY:Z:M/) {
 	    print MBAM "$keep";
 	    ++$queries_m;
 	} else {
 	    print BAM "$keep";
-	    ++$queries_rp;
+	    ++$queries_rpo;
 	}
     }
     
@@ -669,7 +688,8 @@ sub call_bowtie_iterative {
     # update
     $$read_count -= ($$r - $r_at_start);
     $$read_count -= ($$p - $p_at_start);
-    $$query_count -= $queries_rp;
+    $$read_count -= ($$o - $o_at_start);
+    $$query_count -= $queries_rpo;
     
     my $bam = "$out_base" . ".bam";
     my $mbam = "$m_out_base" . ".bam";
@@ -701,7 +721,7 @@ sub score_line {
 }
 
 sub get_keepers {
-    my($scores,$lines,$r,$p,$m,$read_name,$no_condense) = @_; ## passed by reference .. array, array, rest strings
+    my($scores,$lines,$r,$p,$m,$read_name,$no_condense,$o,$ranmax) = @_; ## passed by reference .. array, array, rest strings
     my $best;
     my $best_score = 0;
     my $i = 0;
@@ -774,32 +794,71 @@ sub get_keepers {
     
     my $xx_i = scalar(@$lines);
     my $XZf;
+    my @of = ();
     if($total == 0) {
-	# no guidance, randomly select
-	
-	++$$r;
-	$best = int(rand(scalar(@$lines)));
+	# no guidance, randomly select, unless its a ranmax violator
 	$XZf = sprintf("%.3f",1/(scalar(@$lines)));
-	$output = $$lines[$best];
-	$output =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
-	
-	# increment to account for the one already written
-	--$read_num;
-	
-	# add extra lines, if needed
-	# loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
-	for(my $j = $read_num; $j > 0; --$j) {
+	if($xx_i > $$ranmax) {
+	    ++$$o;
+	    @of = split ("\t", $$lines[0]);
+	    $of[1] = 4;  ## set SAM FLAG to 4 for unmapped
+	    $of[2] = "\*";
+	    $of[3] = 0;
+	    $of[4] = 0;
+	    $of[5] = "\*";
+	    $of[6] = "\*";
+	    $of[7] = 0;
+	    $of[8] = 0;
+	    $output = join("\t", @of);
+	    $output =~ s/\n/\tXX:i:$xx_i\tXY:Z:O\tXZ:f:1\n/g;  ## XZ:f set to 1 .. we are 100% certain that this was too random to attempt to place
+
+	    # increment to account for the one already written
+	    --$read_num;
+	    
+	    # add extra lines, if needed
+	    # loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
+	    for(my $j = $read_num; $j > 0; --$j) {
+		++$$o;
+		@of = split ("\t", $$lines[0]);
+		$of[1] = 4;  ## set SAM FLAG to 4 for unmapped
+		$of[2] = "\*";
+		$of[3] = 0;
+		$of[4] = 0;
+		$of[5] = "\*";
+		$of[6] = "\*";
+		$of[7] = 0;
+		$of[8] = 0;
+		$swapee = join("\t", @of);
+		$swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:O\tXZ:f:1\n/g;  ## XZ:f set to 1 .. we are 100% certain that this was too random to attempt to place
+		$swapee =~ s/^[^\t]+\t//g;  ## remove old read name
+		$swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+		$output .= $swapee;
+	    }
+	} else {
+	    # no guidance, not a ranmax violator. randomly place
 	    ++$$r;
 	    $best = int(rand(scalar(@$lines)));
-	    $swapee = $$lines[$best];
-	    $swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
-	    $swapee =~ s/^[^\t]+\t//g;  ## remove old read name
-	    $swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+	    $output = $$lines[$best];
+	    $output =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
+	
+	    # increment to account for the one already written
+	    --$read_num;
 	    
-	    # test
-	    #print STDERR "\tAt j of $j next line set as: $swapee";
-	    
-	    $output .= $swapee;
+	    # add extra lines, if needed
+	    # loop cannot be entered if no_condense is set, as $read_num is always set to zero by this point
+	    for(my $j = $read_num; $j > 0; --$j) {
+		++$$r;
+		$best = int(rand(scalar(@$lines)));
+		$swapee = $$lines[$best];
+		$swapee =~ s/\n/\tXX:i:$xx_i\tXY:Z:R\tXZ:f:$XZf\n/g;
+		$swapee =~ s/^[^\t]+\t//g;  ## remove old read name
+		$swapee = "$readbase" . "_" . "$j\t" . "$swapee";
+		
+		# test
+		#print STDERR "\tAt j of $j next line set as: $swapee";
+		
+		$output .= $swapee;
+	    }
 	}
 	return $output;
     } else {
@@ -1281,6 +1340,7 @@ OPTIONS:
    --mismatches [integer]: Number of mismatches allowed for a valid alignment. Default 0. Must be either 0 or 1.
    --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-100.
    --max_rep [integer]: Maximum number of possible alignments. Reads with more than this number of possible placements are not retained in the final alignment. Default 1000. Must be integer >=6.
+   --ranmax [integer]: For multi-mapped reads that can't be placed based on density, suppress random placement if the number of choices exceeds ranmax. Default 3. Must be integer >= 1. Note that setting of one means NO such reads will be placed.
    --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adpater trimming is enabled.
 
 DOCUMENTATION:
@@ -1588,7 +1648,9 @@ butter [options] [reads.fa/.fasta/.fq/.fastq] [genome.fa]
 
 --aln_cores [integer]: Number of processor cores to use during bowtie alignment phase. Default 1. Must be integer 1-00.
 
---max_rep [integer]: Maximum number of possible placements for a read. Reads with a number of placements more than --max_rep will be reported as unmapped. Default: 1000. Must be integer of at least 6.
+--max_rep [integer]: Maximum number of possible placements for a multi-mapped read being guided by density. Such reads with a number of placements more than --max_rep will be reported as unmapped and have custom tag XY:Z set to M. Default: 1000. Must be integer of at least 6.
+
+--ranmax [integer]: Maximum number of possible placements for a multi-mapped read that can't be guided by density. Such reads with a number of placements more than --ranmax will be reported as unmapped and have custom tag XY:Z set to O. Default: 3. Must be integer of 1 or more.
 
 --adapter [string]: 3' Adapter sequence to trim. Must be 8 or more ATGCatgc characters. If specified, 3' adapter trimming is enabled.
 
@@ -1662,12 +1724,12 @@ butter writes a number of temporary files to disk during a run .. intermediate B
 
 =head1 OUTPUT
 
-The output is a single BAM alignment file sorted by chromosomal position. The BAM header includes lines describing the run. butter adds three custom tags for each alignment. All reads are in the alignment file, including reads that were unmapped (unmapped reads have bit 0x4 set in the SAM FLAG field, per SAM specification). Reads that were unmapped because they had zero possible alignments with the reference have optional tag XM:i set to 0, while reads that were unmapped becuase they had more than --max_rep possible placements have XM:i set to a high number (equal to whatever setting of --max_rep was used in the run).  The XM:i custom tag comes from bowtie (see bowtie documentation).
+The output is a single BAM alignment file sorted by chromosomal position. The BAM header includes lines describing the run. butter adds three custom tags for each alignment. All reads are in the alignment file, including reads that were unmapped (unmapped reads have bit 0x4 set in the SAM FLAG field, per SAM specification). Other custom tags not described below are from bowtie .. see bowtie documentation for their meaning.
 
 Custom tag XX:i: indicates number of valid placements for the read (of which only one is being shown)
 
-Custom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed.
+Custom tag XY:Z: indicates how the reported placement was selected. U: uniquely mapped, P: multi-mapped and placed due to clustering, R: multi-mapped and randomly placed, N: unmapped, M: Multi-mappings exceeded setting --max_rep, so no placement performed, O: multi-mapped with no density-based placement possible, number of locations exceeded setting --ranmax, so no placement performed.
 
-Custom tag XZ:f: indicates the probability that the given read came from the reported position, based on the butter iterative density analysis. Set to 1 for reads with XY:Z: of M, U, and N.
+Custom tag XZ:f: indicates the probability that the given read came from the reported position, based on the butter iterative density analysis. Set to 1 for reads with XY:Z: of M, U, N, and O.
 
 =cut
