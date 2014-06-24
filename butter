@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.2.3.1"; 
+my $version_num = "0.2.4"; 
 my $help_message = get_help($version_num);
 
 my $version;
@@ -245,7 +245,7 @@ unless($quiet) {
 }
 
 my ($nr_trimmed_file,$read_count,$query_count) = get_nr_trimmed(\$trimmed,\$read_format,\$quiet,\$no_condense);
-if(($read_format eq "q") and ($$no_condense)) {
+if(($read_format eq "q") and ($no_condense)) {
     # in this case, we have written a FASTA version of the file, but not condensed it.
     $trimmed = $nr_trimmed_file;
     $nr_trimmed_file = "NULL";
