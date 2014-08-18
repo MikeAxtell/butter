@@ -2,7 +2,7 @@
 use strict;
 use Getopt::Long;
 
-my $version_num = "0.2.4.1"; 
+my $version_num = "0.2.5"; 
 my $help_message = get_help($version_num);
 
 my $version;
@@ -300,9 +300,9 @@ $m = 0;
 unless(-r $two_bam) {
     die "FATAL: unknown failure .. expected file $two_bam not found\n";
 }
-unless(-r $mmap2_fasta_file) {
-    die "FATAL: unknown failure .. expected file $mmap2_fasta_file not found\n";
-}
+#unless(-r $mmap2_fasta_file) {
+#    die "FATAL: unknown failure .. expected file $mmap2_fasta_file not found\n";
+#}
 
 system "rm -f $two_m_bam";
 
@@ -328,9 +328,9 @@ $m = 0;
 unless(-r $five_bam) {
     die "FATAL: unknown failure .. expected file $five_bam not found\n";
 }
-unless(-r $mmap5_fasta_file) {
-    die "FATAL: unknown failure .. expected file $mmap5_fasta_file not found\n";
-}
+#unless(-r $mmap5_fasta_file) {
+#    die "FATAL: unknown failure .. expected file $mmap5_fasta_file not found\n";
+#}
 
 system "rm -f $five_m_bam";
 
