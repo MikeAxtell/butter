@@ -1340,10 +1340,10 @@ sub call_bowtie_initial {
     close UNMAPPED;
     close UNIQUE;
     
-    # Verify presence of the --max file
-    unless(-r $mmap_fasta_file) {
-	die "FATAL in sub-routine call_bowtie_initial ... after bowtie run, expected --max file $mmap_fasta_file not readable\n";
-    }
+    # Verify presence of the --max file .. or not. 
+    #unless(-r $mmap_fasta_file) {
+	#die "FATAL in sub-routine call_bowtie_initial ... after bowtie run, expected --max file $mmap_fasta_file not readable\n";
+    #}
     
     # update ....
     $$read_count -= $unmap_n;
